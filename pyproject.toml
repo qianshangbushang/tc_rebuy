@@ -10,3 +10,62 @@ dependencies = [
     "pydantic>=2.11.9",
     "scikit-learn>=1.7.2",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8.6",
+]
+
+[tool.ruff]
+# 目标 Python 版本
+target-version = "py310"
+
+# 行长度限制
+line-length = 88
+
+# 要检查的文件
+extend-include = ["*.ipynb"]
+
+# 要排除的目录和文件
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# 启用的规则集
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG", # flake8-unused-arguments
+    "SIM", # flake8-simplify
+]
+
+# 忽略的规则
+ignore = [
+    "E501",  # 行长度由 formatter 处理
+    "B008",  # 不要在函数调用中使用可变默认参数
+]
+
+[tool.ruff.format]
+# 使用双引号
+quote-style = "double"
+
+# 缩进样式
+indent-style = "space"
+
+# 在魔术逗号后换行
+skip-magic-trailing-comma = false
+
+# 换行符风格
+line-ending = "auto"
+
+
