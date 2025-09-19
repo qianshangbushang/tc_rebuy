@@ -1,0 +1,12 @@
+[project]
+name = "tc-rebuy"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ipykernel>=6.30.1",
+    "pandas>=2.3.2",
+    "pydantic>=2.11.9",
+    "scikit-learn>=1.7.2",
+]
