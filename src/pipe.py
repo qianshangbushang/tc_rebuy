@@ -1,8 +1,11 @@
+import gc
 import os
 import pickle
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 from pydantic import BaseModel
@@ -11,7 +14,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -21,12 +24,22 @@ except ImportError:
     from data import load_data, load_dataframe
 
 
+class ModelConfig(BaseModel):
+    model_type: str = "rf"  # 可选 'rf', 'xgb', 'lgb'
+    n_estimators: int = 200
+    max_depth: int = 10
+    learning_rate: float = 0.1
+    scale_pos_weight: float = 7.0  # 用于处理类别不平衡
+
+
 class TCDataConfig(BaseModel):
     fill_median_cols: list[str] = []
     fill_mode_cols: list[str] = []
 
     cache_clean_result: bool = False
     cache_clean_path: str = "data/cleaned_data.pkl"
+
+    model: ModelConfig = ModelConfig()
 
 
 class UserMerchantFeatureTransformer(BaseEstimator, TransformerMixin):
@@ -57,7 +70,16 @@ class UserMerchantFeatureTransformer(BaseEstimator, TransformerMixin):
             merchant_user_ratio, on=["user_id", "merchant_id"], how="outer"
         )
 
-        self.user_merchant_features = user_merchant_features
+        self.user_merchant_features = user_merchant_features.reset_index()
+        del (
+            user_merchant_ratio,
+            merchant_user_ratio,
+            user_merchant_interactions,
+            user_total_interactions,
+            merchant_total_interactions,
+            X_copy,
+        )
+        gc.collect()
         return self
 
     def transform(self, X):
@@ -139,6 +161,8 @@ class UserFeatureTransformer(BaseEstimator, TransformerMixin):
         )
 
         self.features = features.reset_index()
+        del action_ratio, time_ratio, time_action_ratio, user_stats, features, X_copy
+        gc.collect()
         return self
 
     def transform(self, X):
@@ -213,6 +237,10 @@ class MerchantFeatureTransformer(BaseEstimator, TransformerMixin):
             .join(merch_stats, how="outer")
         )
 
+        self.features = self.features.reset_index()
+        del action_ratio, time_ratio, time_action_ratio, merch_stats, X_copy
+        gc.collect()
+
         return self
 
     def transform(self, X):
@@ -254,16 +282,42 @@ def create_sample_pipeline(conf: TCDataConfig):
         return None
 
 
-def create_model_pipeline(conf: TCDataConfig) -> Pipeline:
-    """创建模型训练管道"""
-    steps = [
-        ("scaler", StandardScaler()),
-        (
-            "classifier",
-            RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1),
-        ),
-    ]
+def create_model_pipeline(conf: ModelConfig) -> Pipeline:
+    """创建模型训练管道，支持多种模型"""
+    steps = [("scaler", StandardScaler())]
 
+    if conf.model_type == "rf":
+        classifier = RandomForestClassifier(
+            n_estimators=conf.n_estimators,
+            max_depth=conf.max_depth,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced",
+        )
+    elif conf.model_type == "xgb":
+        if xgb is None:
+            raise ImportError("XGBoost 未安装，请安装后使用: pip install xgboost")
+        classifier = xgb.XGBClassifier(
+            n_estimators=conf.n_estimators,
+            max_depth=conf.max_depth,
+            random_state=42,
+            n_jobs=-1,
+            scale_pos_weight=conf.scale_pos_weight,
+        )
+    elif conf.model_type == "lgb":
+        if lgb is None:
+            raise ImportError("LightGBM 未安装，请安装后使用: pip install lightgbm")
+        classifier = lgb.LGBMClassifier(
+            n_estimators=conf.n_estimators,
+            max_depth=conf.max_depth,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced",
+        )
+    else:
+        raise ValueError("model_type 必须是 'rf', 'xgb' 或 'lgb'")
+
+    steps.append(("classifier", classifier))
     return Pipeline(steps)
 
 
@@ -271,8 +325,8 @@ class TCDataPipeline:
     def __init__(self, conf: TCDataConfig):
         self.conf = conf
         self.clean_pipe = create_clean_pipeline(conf)
-        self.sample_pipe = None # create_sample_pipeline(conf)
-        self.model_pipe = create_model_pipeline(conf)
+        self.sample_pipe = None  # create_sample_pipeline(conf)
+        self.model_pipe = create_model_pipeline(conf.model)
 
         # 存储数据集
         self.X_train = None
@@ -318,14 +372,14 @@ class TCDataPipeline:
         """
         print("🔄 Step 1: 数据清洗和特征工程...")
         self._clean(X, y)
-        self.X_clean = self.X_clean.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
+        # self.X_clean = self.X_clean.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
         print(f"✅ 清洗后数据形状: {self.X_clean.shape}")
         print(f"✅ 特征数量: {self.X_clean.shape[1]}")
 
         print("\n🔄 Step 2: 数据集拆分...")
         # 2. 数据集拆分
         self.split_dataset(val_size, random_state)
-
+        self.X_train = self.X_train.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
         # 3. 数据采样 (如果有训练数据且配置了采样管道)
         if self.sample_pipe is not None and self.X_train is not None:
             print("\n🔄 Step 3: 数据采样...")
@@ -340,6 +394,7 @@ class TCDataPipeline:
         if self.model_pipe is not None and self.X_train is not None and self.y_train is not None:
             print("\n🔄 Step 4: 模型训练...")
             try:
+                self.feature_names = self.X_train.columns.tolist()
                 self.model_pipe.fit(self.X_train, self.y_train)
                 print("✅ 模型训练完成")
                 self.is_fitted = True
@@ -370,7 +425,7 @@ class TCDataPipeline:
             self.y_test = y_clean[test_mask].reset_index(drop=True)
 
             # 剩余的作为训练+验证集
-            train_val_mask = y_clean.isin([1,0])
+            train_val_mask = y_clean.isin([1, 0])
             X_train_val = X_clean[train_val_mask].reset_index(drop=True)
             y_train_val = y_clean[train_val_mask].reset_index(drop=True)
         else:
@@ -432,16 +487,16 @@ class TCDataPipeline:
         if not self.is_fitted:
             raise ValueError("Model has not been trained yet.")
 
-        X_processed = self.transform(X)
-        return self.model_pipe.predict(X_processed)
+        # X_processed = self.transform(X)
+        return self.model_pipe.predict(X[self.feature_names])
 
     def predict_proba(self, X):
         """预测概率"""
         if not self.is_fitted:
             raise ValueError("Model has not been trained yet.")
 
-        X_processed = self.transform(X)
-        return self.model_pipe.predict_proba(X_processed)
+        # X_processed = self.transform(X)
+        return self.model_pipe.predict_proba(X[self.feature_names])
 
     def evaluate(self, stage="val"):
         """评估模型性能"""
@@ -471,7 +526,7 @@ class TCDataPipeline:
         y_eval_clean = y_eval[mask]
 
         # 预测
-        y_pred = self.model_pipe.predict(X_eval_clean)
+        y_pred = self.model_pipe.predict(X_eval_clean[self.feature_names])
 
         # 计算指标
         accuracy = accuracy_score(y_eval_clean, y_pred)
@@ -482,7 +537,7 @@ class TCDataPipeline:
         # 如果是二分类，计算AUC
         if hasattr(self.model_pipe, "predict_proba") and len(np.unique(y_eval_clean)) == 2:
             try:
-                y_pred_proba = self.model_pipe.predict_proba(X_eval_clean)
+                y_pred_proba = self.model_pipe.predict_proba(X_eval_clean[self.feature_names])
                 auc = roc_auc_score(y_eval_clean, y_pred_proba[:, 1])
                 print(f"AUC: {auc:.4f}")
             except Exception as e:
@@ -549,6 +604,92 @@ class TCDataPipeline:
         if self.X_test is not None:
             print(f"测试集: {self.X_test.shape}")
 
+    def tune_model(self, param_grid=None, search_type="grid", cv=3, scoring="roc_auc", n_iter=20):
+        """
+        自动调参，支持 RF/XGB/LGB
+        param_grid: dict，参数搜索空间
+        search_type: "grid" 或 "random"
+        """
+        if self.X_train is None or self.y_train is None:
+            print("❌ 训练集不存在，无法调参")
+            return None
+
+        if param_grid is None:
+            # 默认参数空间
+            if self.conf.model.model_type == "rf":
+                param_grid = {
+                    "classifier__n_estimators": [100, 200, 500],
+                    "classifier__max_depth": [4, 6, 10, 16],
+                }
+            elif self.conf.model.model_type == "xgb":
+                param_grid = {
+                    "classifier__n_estimators": [200, 500, 1000],
+                    "classifier__max_depth": [4, 6, 10],
+                    "classifier__learning_rate": [0.05, 0.1, 0.2],
+                    "classifier__scale_pos_weight": [5, 7, 10],
+                }
+            elif self.conf.model.model_type == "lgb":
+                param_grid = {
+                    "classifier__n_estimators": [200, 500, 1000],
+                    "classifier__max_depth": [4, 6, 10],
+                    "classifier__learning_rate": [0.05, 0.1, 0.2],
+                    "classifier__class_weight": ["balanced", None],
+                }
+
+        search_cls = GridSearchCV if search_type == "grid" else RandomizedSearchCV
+
+        if search_type == "grid":
+            search = search_cls(
+                self.model_pipe,
+                param_grid,
+                cv=cv,
+                scoring=scoring,
+                verbose=2,
+                n_jobs=-1,
+            )
+        else:
+            search = search_cls(
+                self.model_pipe,
+                param_grid,
+                cv=cv,
+                scoring=scoring,
+                n_iter=n_iter,
+                verbose=2,
+                n_jobs=-1,
+            )
+        print("🔍 开始模型调参...")
+        search.fit(self.X_train, self.y_train)
+        print(f"✅ 最优参数: {search.best_params_}")
+        print(f"✅ 最优分数: {search.best_score_:.4f}")
+
+        self.model_pipe = search.best_estimator_
+        self.is_fitted = True
+        return search
+
+
+def export_prediction(pipe: TCDataPipeline, X_test: pd.DataFrame, filename="prediction.csv"):
+    """
+    导出预测结果到 prediction.csv
+    格式：user_id, merchant_id, prob
+    """
+    if not pipe.is_fitted:
+        raise ValueError("模型尚未训练，无法导出预测结果。")
+    # 只保留训练用的特征
+    drop_cols = ["user_id", "merchant_id", "activity_log"]
+    X_pred = X_test.drop(columns=[col for col in drop_cols if col in X_test.columns], errors="ignore")
+
+    # 预测概率
+    prob = pipe.predict_proba(X_pred)[:, 1]  # 取正类概率
+
+    # 构建结果 DataFrame
+    result = pd.DataFrame(
+        {"user_id": X_test["user_id"].values, "merchant_id": X_test["merchant_id"].values, "prob": prob}
+    )
+
+    # 保存为 CSV
+    result.to_csv(filename, index=False)
+    print(f"✅ 预测结果已保存到 {filename}")
+
 
 def analysis():
     """Perform data analysis."""
@@ -590,13 +731,18 @@ def run():
             fill_mode_cols=["gender"],
             cache_clean_result=True,
             cache_clean_path="../data/cleaned_data.pkl",
+            model=ModelConfig(model_type="lgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
         )
     )
 
     pipe.summary()
     pipe.fit(X, y)
-    pipe.evaluate(stage="val")
-    print(X.head(10))
+    # pipe.tune_model()
+    # pipe.evaluate(stage="val")
+    # print(X.head(10))
+
+    if pipe.X_test is not None:
+        export_prediction(pipe, pipe.X_test, filename="prediction.csv")
 
 
 if __name__ == "__main__":
