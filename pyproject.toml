@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "imblearn>=0.0",
     "ipykernel>=6.30.1",
     "pandas>=2.3.2",
     "pydantic>=2.11.9",
@@ -21,7 +22,7 @@ dev = [
 target-version = "py310"
 
 # 行长度限制
-line-length = 88
+line-length = 120
 
 # 要检查的文件
 extend-include = ["*.ipynb"]
