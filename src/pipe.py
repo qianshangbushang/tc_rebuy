@@ -742,7 +742,7 @@ def run():
     # print(X.head(10))
 
     if pipe.X_test is not None:
-        export_prediction(pipe, pipe.X_test, filename="prediction.csv")
+        export_prediction(pipe, pipe.X_test, filename="../output/prediction.csv")
 
 
 if __name__ == "__main__":
