@@ -1,7 +1,3 @@
-import gc
-import os
-import pickle
-
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -9,7 +5,6 @@ import xgboost as xgb
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 from pydantic import BaseModel
-from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -18,12 +13,13 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from feature.behavior_transformer import BehaviorTransformer
+from feature.tfidf_transformer import TfidfTransformer
+
 try:
     from .data import load_data, load_dataframe
 except ImportError:
     from data import load_data, load_dataframe
-
-
 
 
 class ModelConfig(BaseModel):
@@ -38,9 +34,11 @@ class TCDataConfig(BaseModel):
     fill_median_cols: list[str] = []
     fill_mode_cols: list[str] = []
 
-    cache_clean_result: bool = False
-    cache_clean_path: str = "data/cleaned_data.pkl"
+    cache_behavior_feature: bool = True
+    cache_behavior_path: str = "../data/behavior_feature.pkl"
 
+    cache_tfidf_feature: bool = True
+    cache_tfidf_path: str = "../data/tfidf_feature.pkl"
     model: ModelConfig = ModelConfig()
 
 
@@ -116,10 +114,17 @@ def create_model_pipeline(conf: ModelConfig) -> Pipeline:
 class TCDataPipeline:
     def __init__(self, conf: TCDataConfig):
         self.conf = conf
-        self.cache_feature_transformer = CacheFeatureTransformer(
-            enable_cache=conf.cache_clean_result,
-            cache_path=conf.cache_clean_path,
+
+        self.behavior_transformer = BehaviorTransformer(
+            enable_cache=conf.cache_behavior_feature,
+            cache_path=conf.cache_behavior_path,
         )
+
+        self.tfidf_transformer = TfidfTransformer(
+            enable_cache=conf.cache_tfidf_feature,
+            cache_path=conf.cache_tfidf_path,
+        )
+
         self.clean_pipe = create_clean_pipeline(conf)
         self.sample_pipe = None  # create_sample_pipeline(conf)
         self.model_pipe = create_model_pipeline(conf.model)
@@ -143,7 +148,8 @@ class TCDataPipeline:
         """
         仅进行数据清洗和特征工程
         """
-        self.cache_feature_transformer.fit(X, y)
+        self.behavior_transformer.fit(X, y)
+        self.tfidf_transformer.fit(X, y)
 
         train_mask = y.isin([0, 1])
         test_mask = y.isnull()
@@ -151,8 +157,11 @@ class TCDataPipeline:
         X_train, y_train = X[train_mask], y[train_mask]
         X_test, y_test = X[test_mask], y[test_mask]
 
-        X_train = self.cache_feature_transformer.transform(X_train)
-        X_test = self.cache_feature_transformer.transform(X_test)
+        X_train = self.behavior_transformer.transform(X_train)
+        X_test = self.behavior_transformer.transform(X_test)
+
+        X_train = self.tfidf_transformer.transform(X_train)
+        X_test = self.tfidf_transformer.transform(X_test)
 
         return X_train, y_train, X_test, y_test
 
@@ -419,7 +428,7 @@ def analysis():
 
 
 def run():
-    df = load_dataframe()
+    df = load_dataframe(nrow=None)
     X, y = df.drop(columns=["label"]), df["label"]
     pipe = create_clean_pipeline(
         TCDataConfig(
@@ -431,8 +440,8 @@ def run():
         TCDataConfig(
             fill_median_cols=["age_range"],
             fill_mode_cols=["gender"],
-            cache_clean_result=True,
-            cache_clean_path="../data/cleaned_data.pkl",
+            # cache_behavior_feature=True,
+            # cache_behavior_path="../data/cleaned_data.pkl",
             model=ModelConfig(model_type="lgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
         )
     )

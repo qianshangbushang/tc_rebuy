@@ -8,13 +8,13 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 
-class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
+class TfidfTransformer(BaseEstimator, TransformerMixin):
     """TF-IDF特征转换器"""
 
     def __init__(
         self,
-        top_n_features=500,
-        min_df=2,
+        top_n_features=50,
+        min_df=1,
         max_df=0.95,
         enable_cache=True,
         cache_path: str = "../output/tfidf_feature.pkl",
@@ -93,11 +93,21 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         print("🤖 训练向量化器...")
         self._fit_vectorizers(user_docs, merchant_docs, user_merchant_docs)
 
+        # 4. 计算需要保存特征的user， merchant_id
+        print("🆔 计算需要保存特征的ID...")
+        train_test_mask = y != -1
+        valid_df = X.loc[train_test_mask, ["user_id", "merchant_id"]]
+
+        user_ids = valid_df["user_id"].unique()
+        merchant_ids = valid_df["merchant_id"].unique()
+        user_merchant_pairs = set(map(tuple, valid_df[["user_id", "merchant_id"]].values))
         # 4. 预计算所有特征矩阵
         print("📊 预计算特征矩阵...")
-        self.user_tfidf_features = self._compute_user_features(user_docs)
-        self.merchant_tfidf_features = self._compute_merchant_features(merchant_docs)
-        self.user_merchant_tfidf_features = self._compute_user_merchant_features(user_merchant_docs)
+        self.user_tfidf_features = self._compute_user_features(user_docs, user_ids)
+        self.merchant_tfidf_features = self._compute_merchant_features(merchant_docs, merchant_ids)
+        self.user_merchant_tfidf_features = self._compute_user_merchant_features(
+            user_merchant_docs, user_merchant_pairs
+        )
 
         self.is_fitted = True
         print("✅ TF-IDF特征训练完成")
@@ -129,7 +139,6 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         print("🔄 开始TF-IDF特征转换...")
 
         df = X.copy()
-
         # 1. 关联用户TF-IDF特征
         if self.user_tfidf_features is not None:
             df = df.merge(self.user_tfidf_features, on="user_id", how="left")
@@ -161,6 +170,8 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         split_columns = ["item_id", "cate_id", "brand_id", "time", "action_type"]
         df[split_columns] = df["activity_log"].str.split(":", expand=True)
 
+        df = df.drop(columns=["activity_log"], errors="ignore")
+        print(f"✅ 数据预处理完成，展开后数据形状: {df.shape}")
         return df
 
     def _build_user_documents(self, df):
@@ -175,6 +186,7 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         ]:
             user_grouped = df.groupby("user_id")[column].apply(lambda x: " ".join(x.astype(str).tolist())).to_dict()
             user_docs[feature_type] = user_grouped
+            print(f"  🔤 构建用户{feature_type}文档: 共计 {len(user_grouped)} 个用户")
 
         return user_docs
 
@@ -186,13 +198,13 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
             ("cat", "cate_id"),
             ("brand", "brand_id"),
             ("item", "item_id"),
-            ("user", "user_id"),
+            # ("user", "user_id"),
         ]:
             merchant_grouped = (
                 df.groupby("merchant_id")[column].apply(lambda x: " ".join(x.astype(str).tolist())).to_dict()
             )
             merchant_docs[feature_type] = merchant_grouped
-
+            print(f"  🏪 构建商户{feature_type}文档: 共计 {len(merchant_grouped)} 个商户")
         return merchant_docs
 
     def _build_user_merchant_documents(self, df):
@@ -211,6 +223,7 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
                 user_merchant_dict[key] = doc
 
             user_merchant_docs[feature_type] = user_merchant_dict
+            print(f"  🤝 构建用户-商户{feature_type}文档: 共计 {len(user_merchant_dict)} 个对")
 
         return user_merchant_docs
 
@@ -224,7 +237,7 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
                 self.user_vectorizers[feature_type].fit(docs)
 
         # 训练商户向量化器
-        for feature_type in ["cat", "brand", "item", "user"]:
+        for feature_type in ["cat", "brand", "item"]:
             print(f"  🏪 训练商户{feature_type}向量化器...")
             docs = list(merchant_docs[feature_type].values())
             if docs:
@@ -237,15 +250,15 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
             if docs:
                 self.user_merchant_vectorizers[feature_type].fit(docs)
 
-    def _compute_user_features(self, user_docs):
+    def _compute_user_features(self, user_docs, user_ids):
         """预计算所有用户的TF-IDF特征"""
         print("  📊 计算用户TF-IDF特征...")
 
-        all_user_ids = set()
-        for feature_type in ["cat", "brand", "item", "merchant"]:
-            all_user_ids.update(user_docs[feature_type].keys())
+        # all_user_ids = set()
+        # for feature_type in ["cat", "brand", "item", "merchant"]:
+        #     all_user_ids.update(user_docs[feature_type].keys())
 
-        all_user_ids = sorted(list(all_user_ids))
+        all_user_ids = sorted(list(user_ids))
 
         # 为每种特征类型计算TF-IDF
         user_features = []
@@ -281,20 +294,20 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         else:
             return pd.DataFrame({"user_id": all_user_ids})
 
-    def _compute_merchant_features(self, merchant_docs):
+    def _compute_merchant_features(self, merchant_docs, merchant_ids):
         """预计算所有商户的TF-IDF特征"""
         print("  🏪 计算商户TF-IDF特征...")
 
-        all_merchant_ids = set()
-        for feature_type in ["cat", "brand", "item", "user"]:
-            all_merchant_ids.update(merchant_docs[feature_type].keys())
+        # all_merchant_ids = set()
+        # for feature_type in ["cat", "brand", "item"]:
+        #     all_merchant_ids.update(merchant_docs[feature_type].keys())
 
-        all_merchant_ids = sorted(list(all_merchant_ids))
+        all_merchant_ids = sorted(list(merchant_ids))
 
         merchant_features = []
         feature_names = ["merchant_id"]
 
-        for feature_type in ["cat", "brand", "item", "user"]:
+        for feature_type in ["cat", "brand", "item"]:
             vectorizer = self.merchant_vectorizers[feature_type]
 
             docs = [merchant_docs[feature_type].get(merchant_id, "") for merchant_id in all_merchant_ids]
@@ -321,53 +334,81 @@ class TfidfFeatureTransformer(BaseEstimator, TransformerMixin):
         else:
             return pd.DataFrame({"merchant_id": all_merchant_ids})
 
-    def _compute_user_merchant_features(self, user_merchant_docs):
-        """预计算所有用户-商户对的TF-IDF特征"""
+    def _compute_user_merchant_features(self, user_merchant_docs, user_merchant_pairs):
         print("  🤝 计算用户-商户TF-IDF特征...")
 
-        # 收集所有用户-商户对
-        all_pairs = set()
-        for feature_type in ["cat", "brand", "item"]:
-            for key in user_merchant_docs[feature_type].keys():
-                user_id, merchant_id = key.split("_", 1)
-                all_pairs.add((int(user_id), int(merchant_id)))
-
-        all_pairs = sorted(list(all_pairs))
-
-        user_merchant_features = []
-        feature_names = ["user_id", "merchant_id"]
+        # 只处理 user_merchant_pairs 中的有效对
+        all_pairs = sorted(list(user_merchant_pairs))
+        result_df = pd.DataFrame(all_pairs, columns=["user_id", "merchant_id"])
 
         for feature_type in ["cat", "brand", "item"]:
             vectorizer = self.user_merchant_vectorizers[feature_type]
-
             docs = []
+            pairs = []
             for user_id, merchant_id in all_pairs:
                 key = f"{user_id}_{merchant_id}"
                 doc = user_merchant_docs[feature_type].get(key, "")
-                docs.append(doc)
-
-            if any(docs):
+                if doc:  # 只对有内容的对做TF-IDF
+                    docs.append(doc)
+                    pairs.append((user_id, merchant_id))
+            if docs:
                 try:
                     tfidf_matrix = vectorizer.transform(docs)
                     n_features = tfidf_matrix.shape[1]
                     columns = [f"user_merchant_{feature_type}_tfidf_{i}" for i in range(n_features)]
-                    feature_names.extend(columns)
-                    user_merchant_features.append(tfidf_matrix.toarray())
+                    feat_df = pd.DataFrame(tfidf_matrix.toarray(), columns=columns)
+                    feat_df["user_id"] = [p[0] for p in pairs]
+                    feat_df["merchant_id"] = [p[1] for p in pairs]
+                    result_df = result_df.merge(feat_df, on=["user_id", "merchant_id"], how="left")
                 except Exception as e:
                     print(f"⚠️ 用户-商户{feature_type}特征计算失败: {e}")
 
-        if user_merchant_features:
-            combined_features = pd.DataFrame(
-                data=hstack([csr_matrix(feat) for feat in user_merchant_features]).toarray(), columns=feature_names[2:]
-            )
-            # 添加用户ID和商户ID列
-            combined_features.insert(0, "user_id", [pair[0] for pair in all_pairs])
-            combined_features.insert(1, "merchant_id", [pair[1] for pair in all_pairs])
-            return combined_features
+        return result_df
+
+    def _compute_user_merchant_features2(self, user_merchant_docs, user_merchant_pairs):
+        """预计算所有用户-商户对的TF-IDF特征"""
+        print("  🤝 计算用户-商户TF-IDF特征...")
+
+        # 收集所有有内容的对
+        all_pairs = sorted(list(user_merchant_pairs))
+        pair_features = {}
+
+        for feature_type in ["cat", "brand", "item"]:
+            vectorizer = self.user_merchant_vectorizers[feature_type]
+            # docs = []
+            # pairs = []
+            # for key, doc in user_merchant_docs[feature_type].items():
+            #     if doc:
+            #         user_id, merchant_id = key.split("_", 1)
+            #         user_id, merchant_id = int(user_id), int(merchant_id)
+            #         docs.append(doc)
+            #         pairs.append((user_id, merchant_id))
+            #         all_pairs.add((user_id, merchant_id))
+
+            print(f"  🔤 计算用户-商户{feature_type}特征: 共计 {len(all_pairs)} 个有效对")
+            docs = [user_merchant_docs[feature_type].get(f"{u}_{m}", "") for u, m in all_pairs]
+            if docs:
+                try:
+                    tfidf_matrix = vectorizer.transform(docs)
+                    n_features = tfidf_matrix.shape[1]
+                    columns = [f"user_merchant_{feature_type}_tfidf_{i}" for i in range(n_features)]
+                    # 保存每个特征类型的 DataFrame
+                    pair_features[feature_type] = pd.DataFrame(tfidf_matrix.toarray(), columns=columns)
+                    pair_features[feature_type]["user_id"] = [p[0] for p in all_pairs]
+                    pair_features[feature_type]["merchant_id"] = [p[1] for p in all_pairs]
+                except Exception as e:
+                    print(f"⚠️ 用户-商户{feature_type}特征计算失败: {e}")
+
+        # 合并所有特征
+        if pair_features:
+            # 先构造所有有效对的 DataFrame
+            result_df = pd.DataFrame(all_pairs, columns=["user_id", "merchant_id"])
+            # 依次 merge 每个特征类型的 DataFrame
+            for feature_type, feat_df in pair_features.items():
+                result_df = result_df.merge(feat_df, on=["user_id", "merchant_id"], how="left")
+            return result_df
         else:
-            return pd.DataFrame(
-                {"user_id": [pair[0] for pair in all_pairs], "merchant_id": [pair[1] for pair in all_pairs]}
-            )
+            return pd.DataFrame({"user_id": [], "merchant_id": []})
 
     def get_feature_names(self):
         """获取所有特征名称"""
@@ -415,7 +456,7 @@ if __name__ == "__main__":
     print("🧪 使用模拟数据进行测试...")
     print(f"模拟数据形状: {X.shape}")
 
-    transformer = TfidfFeatureTransformer(top_n_features=50, min_df=1, max_df=0.95)
+    transformer = TfidfTransformer(top_n_features=50, min_df=1, max_df=0.95)
     transformer.fit(X, y)
 
     transformed_df = transformer.transform(X)

@@ -1,6 +1,7 @@
 import pandas as pd
 from pydantic import BaseModel
 
+
 class Dataset(BaseModel):
     test_f1: pd.DataFrame
     train_f1: pd.DataFrame
@@ -33,7 +34,12 @@ def load_data():
     )
 
 
-def load_dataframe():
+def load_dataframe(nrow=None):
     df_test_f2 = pd.read_csv("../data/format2/data_format2/test_format2.csv")
     df_train_f2 = pd.read_csv("../data/format2/data_format2/train_format2.csv")
-    return pd.concat([df_test_f2, df_train_f2], axis=0)
+    result = pd.concat([df_test_f2, df_train_f2], axis=0)
+    if nrow is not None:
+        result = result.head(nrow)
+    print(f"✅ 数据加载完成，数据形状: {result.shape}")
+    print(f"✅ 用户-商户对数量: {result.groupby(['user_id', 'merchant_id']).ngroups}")
+    return result
