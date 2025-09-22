@@ -244,213 +244,6 @@ class TCDataConfig(BaseModel):
     model: ModelConfig = ModelConfig()
 
 
-class UserMerchantFeatureTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        self.user_merchant_features = None
-        return
-
-    def fit(self, X, y=None):
-        X_copy = X.copy()
-
-        user_merchant_interactions = X_copy.groupby(["user_id", "merchant_id"]).size()
-        user_total_interactions = X_copy.groupby("user_id").size()
-
-        user_merchant_ratio = (
-            user_merchant_interactions.div(user_total_interactions, level="user_id")
-            .reset_index()
-            .rename(columns={0: "user_merchant_interaction_ratio"})
-        )
-
-        merchant_total_interactions = X_copy.groupby("merchant_id").size()
-        merchant_user_ratio = (
-            user_merchant_interactions.div(merchant_total_interactions, level="merchant_id")
-            .reset_index()
-            .rename(columns={0: "merchant_user_interaction_ratio"})
-        )
-
-        user_merchant_features = user_merchant_ratio.merge(
-            merchant_user_ratio, on=["user_id", "merchant_id"], how="outer"
-        )
-
-        self.user_merchant_features = user_merchant_features.reset_index()
-        del (
-            user_merchant_ratio,
-            merchant_user_ratio,
-            user_merchant_interactions,
-            user_total_interactions,
-            merchant_total_interactions,
-            X_copy,
-        )
-        gc.collect()
-        return self
-
-    def transform(self, X):
-        """✅ 实现特征合并逻辑"""
-        if self.user_merchant_features is None:
-            raise ValueError("Transformer has not been fitted yet.")
-
-        X_transformed = X.copy()
-
-        # 合并用户-商户交互特征
-        if all(col in X_transformed.columns for col in ["user_id", "merchant_id"]):
-            X_transformed = X_transformed.merge(self.user_merchant_features, on=["user_id", "merchant_id"], how="left")
-        else:
-            print("⚠️ 输入数据缺少 user_id 或 merchant_id 列，跳过用户-商户特征合并")
-
-        return X_transformed
-
-
-class UserFeatureTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        self.features = None
-        return
-
-    def fit(self, X, y=None):
-        X_copy = X.copy()
-        X_copy = X_copy[X_copy["activity_log"].notnull()]
-        X_copy = X_copy.assign(activity_log=X_copy["activity_log"].str.split("#")).explode("activity_log")
-
-        X_copy[["item_id", "cate_id", "brand_id", "time", "action_type"]] = X_copy["activity_log"].str.split(
-            ":", expand=True
-        )
-
-        # 每个用户不同action类型的行为占比
-        action_ratio = (
-            X_copy.groupby(["user_id", "action_type"])
-            .size()
-            .div(X_copy.groupby("user_id").size(), level="user_id")
-            .unstack(fill_value=0)
-            .add_prefix("action_ratio_")
-        )
-        action_ratio.columns.name = None
-
-        # 计算每个用户每个月的行为占比
-        X_copy["month"] = X_copy["time"].str[:2].astype(int)
-        time_ratio = (
-            X_copy.groupby(["user_id", "month"])
-            .size()
-            .div(X_copy.groupby("user_id").size(), level="user_id")
-            .unstack(fill_value=0)
-            .add_prefix("time_ratio_")
-        )
-        time_ratio.columns.name = None
-
-        # 计算每个用户每个月不同action的占比。
-        time_action_ratio = X_copy.pivot_table(
-            index="user_id",
-            columns=["month", "action_type"],
-            aggfunc="size",
-            fill_value=0,
-        ).div(X_copy.groupby("user_id").size(), axis=0)
-        time_action_ratio.columns = [
-            f"time_action_ratio_month_{month}_action_{action}" for month, action in time_action_ratio.columns
-        ]
-
-        # 交互统计特征
-        user_stats = X_copy.groupby("user_id").agg(
-            user_item_count=("item_id", "nunique"),
-            user_cate_count=("cate_id", "nunique"),
-            user_brand_count=("brand_id", "nunique"),
-            user_merchant_count=("merchant_id", "nunique"),
-            user_action_count=("action_type", "count"),  # 总行为次数
-        )
-
-        # 合并所有特征
-        features = (
-            action_ratio.join(time_ratio, how="outer")
-            .join(time_action_ratio, how="outer")
-            .join(user_stats, how="outer")
-        )
-
-        self.features = features.reset_index()
-        del action_ratio, time_ratio, time_action_ratio, user_stats, features, X_copy
-        gc.collect()
-        return self
-
-    def transform(self, X):
-        # 假设 X 是一个包含用户信息的 DataFrame
-        # 这里可以添加更多的特征工程步骤
-        if self.features is None:
-            raise ValueError("The transformer has not been fitted yet.")
-        X_transformed = X.copy()
-        X_transformed = X_transformed.merge(self.features, how="left", on="user_id")
-        return X_transformed
-
-
-class MerchantFeatureTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        self.features = None
-        return
-
-    def fit(self, X, y=None):
-        X_copy = X.copy()
-        X_copy = X_copy[X_copy["activity_log"].notnull()]
-        X_copy = X_copy.assign(activity_log=X_copy["activity_log"].str.split("#")).explode("activity_log")
-
-        X_copy[["item_id", "cate_id", "brand_id", "time", "action_type"]] = X_copy["activity_log"].str.split(
-            ":", expand=True
-        )
-
-        # 店铺各种action的占比
-        action_ratio = (
-            X_copy.groupby(["merchant_id", "action_type"])
-            .size()
-            .div(X_copy.groupby("merchant_id").size(), level="merchant_id")
-            .unstack(fill_value=0)
-            .add_prefix("merchant_action_ratio_")
-        )
-        action_ratio.columns.name = None
-
-        X_copy["month"] = X_copy["time"].str[:2].astype(int)
-
-        # 计算每个商户每个月的行为占比
-        time_ratio = (
-            X_copy.groupby(["merchant_id", "month"])
-            .size()
-            .div(X_copy.groupby("merchant_id").size(), level="merchant_id")
-            .unstack(fill_value=0)
-            .add_prefix("merchant_time_ratio_")
-        )
-        time_ratio.columns.name = None
-
-        # 计算每个商户每个月不同action的占比。
-        time_action_ratio = X_copy.pivot_table(
-            index="merchant_id",
-            columns=["month", "action_type"],
-            aggfunc="size",
-            fill_value=0,
-        ).div(X_copy.groupby(["merchant_id"]).size(), axis=0)
-        time_action_ratio.columns = [
-            f"merchant_time_action_ratio_month_{month}_action_{action}" for month, action in time_action_ratio.columns
-        ]
-
-        # 交互统计特征
-        merch_stats = X_copy.groupby("merchant_id").agg(
-            merch_item_count=("item_id", "nunique"),
-            merch_cate_count=("cate_id", "nunique"),
-            merch_brand_count=("brand_id", "nunique"),
-            merch_user_count=("user_id", "nunique"),
-            merch_action_count=("action_type", "count"),  # 总行为次数
-        )
-        # 合并所有特征
-        self.features = (
-            action_ratio.join(time_ratio, how="outer")
-            .join(time_action_ratio, how="outer")
-            .join(merch_stats, how="outer")
-        )
-
-        self.features = self.features.reset_index()
-        del action_ratio, time_ratio, time_action_ratio, merch_stats, X_copy
-        gc.collect()
-
-        return self
-
-    def transform(self, X):
-        X_transformed = X.copy()
-        X_transformed = X_transformed.merge(self.features, how="left", on="merchant_id")
-        return X_transformed
-
-
 def create_clean_pipeline(conf: TCDataConfig) -> Pipeline:
     """Create a data cleaning pipeline."""
     column_transformer = ColumnTransformer(
@@ -466,9 +259,6 @@ def create_clean_pipeline(conf: TCDataConfig) -> Pipeline:
 
     steps = [
         ("column_transformer", column_transformer),
-        ("user_feat", UserFeatureTransformer()),
-        ("merch_feat", MerchantFeatureTransformer()),
-        ("user_merchant_feat", UserMerchantFeatureTransformer()),
     ]
     return Pipeline(steps, verbose=True)
 
@@ -549,50 +339,6 @@ class TCDataPipeline:
         # 训练状态
         self.is_fitted = False
 
-    def _clean(self, X, y=None):
-        # 1. 数据清洗和特征工程
-        if self.conf.cache_clean_result:
-            if os.path.exists(self.conf.cache_clean_path):
-                print(f"♻️ 从缓存加载清洗后的数据: {self.conf.cache_clean_path}")
-                with open(self.conf.cache_clean_path, "rb") as f:
-                    d = pickle.load(f)
-                # cleaned_data = pd.read_pickle(self.conf.cache_clean_path)
-                X_clean, y_clean = d["X"], d["y"]
-            else:
-                X_clean = self.clean_pipe.fit_transform(X, y)
-                y_clean = y.copy()
-                cleaned_data = {"X": X_clean, "y": y_clean}
-                with open(self.conf.cache_clean_path, "wb") as f:
-                    pickle.dump(cleaned_data, f)
-                print(f"✅ 清洗后的数据已缓存到: {self.conf.cache_clean_path}")
-        else:
-            X_clean = self.clean_pipe.fit_transform(X, y)
-            y_clean = y.copy()
-
-        self.X_clean = X_clean
-        self.y_clean = y_clean
-
-    # def split_dataset(self, X, y, val_size=0.2, random_state=42):
-    #     train_data_mask = y.isin([0, 1])
-    #     test_data_mask = y.isnull()
-
-    #     train_X, train_y = X[train_data_mask], y[train_data_mask]
-    #     test_X, test_y = X[test_data_mask], y[test_data_mask]
-
-    #     assert len(train_X) == len(train_y), "训练集特征和标签数量不匹配"
-    #     assert train_y.nunique() > 1, "训练集标签必须至少包含两个类别"
-    #     assert test_y.isnull().all(), "测试集标签必须全部为空"
-    #     print(f"训练数据形状: {train_X.shape}, 测试数据形状: {test_X.shape}")
-
-    #     self.cache_feature_transformer.fit(X, y)
-    #     train_X = self.cache_feature_transformer.transform(train_X)
-
-    #     print("\n🔄 Step 2: 数据集拆分...")
-    #     train_X, val_X, train_y, val_y = train_test_split(
-    #         train_X, train_y, test_size=val_size, random_state=random_state, stratify=train_y
-    #     )
-    #     return train_X, train_y, val_X, val_y, test_X, test_y
-
     def preprocess(self, X: pd.DataFrame, y: pd.Series = None):
         """
         仅进行数据清洗和特征工程
@@ -616,16 +362,7 @@ class TCDataPipeline:
         """
         train_X, train_y, test_X, test_y = self.preprocess(X, y)
         self.summary(train_X, None, test_X)
-        # print("🔄 Step 1: 数据清洗和特征工程...")
-        # self._clean(X, y)
-        # self.X_clean = self.X_clean.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
-        # print(f"✅ 清洗后数据形状: {self.X_clean.shape}")
-        # print(f"✅ 特征数量: {self.X_clean.shape[1]}")
 
-        # 2. 数据集拆分
-        # self.split_dataset(val_size, random_state)
-        # self.X_train = self.X_train.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
-        # 3. 数据采样 (如果有训练数据且配置了采样管道)
         if self.sample_pipe is not None and train_X is not None:
             print("\n🔄 Step 3: 数据采样...")
             try:
@@ -647,72 +384,6 @@ class TCDataPipeline:
                 print(f"❌ 模型训练失败: {e}")
                 self.is_fitted = False
         return self
-
-    # def split_dataset(self, val_size=0.2, random_state=42):
-    #     """
-    #     拆分数据集，支持有测试集标签为空的情况
-    #     """
-    #     X_clean = self.X_clean.reset_index(drop=True)
-    #     y_clean = self.y_clean.reset_index(drop=True)
-
-    #     print("数据集大小： ", X_clean.shape, y_clean.shape)
-    #     # 检查是否有空标签（测试集）
-    #     if y_clean.isnull().any():
-    #         print("📋 检测到空标签，将其作为测试集...")
-    #         test_mask = y_clean.isnull()
-    #         self.X_test = X_clean[test_mask].reset_index(drop=True)
-    #         self.y_test = y_clean[test_mask].reset_index(drop=True)
-
-    #         # 剩余的作为训练+验证集
-    #         train_val_mask = y_clean.isin([1, 0])
-    #         X_train_val = X_clean[train_val_mask].reset_index(drop=True)
-    #         y_train_val = y_clean[train_val_mask].reset_index(drop=True)
-    #     else:
-    #         print("📋 未检测到空标签，从完整数据中拆分测试集...")
-    #         # 如果没有空标签，则随机拆分测试集（20%）
-    #         X_train_val, self.X_test, y_train_val, self.y_test = train_test_split(
-    #             X_clean,
-    #             y_clean,
-    #             test_size=0.2,
-    #             random_state=random_state,
-    #             stratify=y_clean if y_clean.nunique() > 1 else None,
-    #         )
-
-    #     # 从训练+验证集中拆分训练集和验证集
-    #     if val_size > 0 and len(X_train_val) > 1:
-    #         try:
-    #             self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(
-    #                 X_train_val,
-    #                 y_train_val,
-    #                 test_size=val_size,
-    #                 random_state=random_state,
-    #                 stratify=y_train_val if y_train_val.nunique() > 1 else None,
-    #             )
-    #         except ValueError as e:
-    #             print(f"⚠️ 分层拆分失败，使用随机拆分: {e}")
-    #             self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(
-    #                 X_train_val,
-    #                 y_train_val,
-    #                 test_size=val_size,
-    #                 random_state=random_state,
-    #             )
-    #     else:
-    #         # 如果不需要验证集或数据太少
-    #         self.X_train = X_train_val
-    #         self.y_train = y_train_val
-    #         self.X_val = None
-    #         self.y_val = None
-
-    #     # 打印拆分结果
-    #     print(f"✅ 训练集: {self.X_train.shape if self.X_train is not None else 'None'}")
-    #     print(f"✅ 验证集: {self.X_val.shape if self.X_val is not None else 'None'}")
-    #     print(f"✅ 测试集: {self.X_test.shape if self.X_test is not None else 'None'}")
-
-    #     # 打印标签分布
-    #     if self.y_train is not None:
-    #         print(f"训练集标签分布:\n{pd.Series(self.y_train).value_counts()}")
-    #     if self.y_val is not None:
-    #         print(f"验证集标签分布:\n{pd.Series(self.y_val).value_counts()}")
 
     def transform(self, X):
         """对新数据进行预处理"""
@@ -968,10 +639,8 @@ def run():
 
     pipe.fit(X, y)
     pipe.tune_model(X, y)
-    # pipe.evaluate(stage="val")
-    # print(X.head(10))
 
-    if pipe.X_test is not None:
+    if pipe.is_fitted:
         pipe.export_prediction(X, filename="../output/prediction.csv")
 
 
