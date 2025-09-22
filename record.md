@@ -10,3 +10,9 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 ### lgb:
 ✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500}
 ✅ 最优分数: 0.6561
+
+
+# 2025.09.22
+### lgb:
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500}
+✅ 最优分数: 0.6739
