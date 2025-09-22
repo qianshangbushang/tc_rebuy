@@ -31,5 +31,6 @@
     "python.linting.mypyEnabled": false,
     // 文件监视和自动保存
     "files.autoSave": "afterDelay",
-    "files.autoSaveDelay": 1000
+    "files.autoSaveDelay": 1000,
+    "python-envs.pythonProjects": []
 }
