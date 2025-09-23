@@ -16,3 +16,15 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 ### lgb:
 ✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500}
 ✅ 最优分数: 0.6739
+
+# 2025.09.23
+
+### lgb
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500}
+✅ 最优分数: 0.6775
+
+✅ 最优参数: {'classifier__class_weight': 'balanced', 'classifier__learning_rate': 0.06, 'classifier__max_depth': 3, 'classifier__n_estimators': 600}
+✅ 最优分数: 0.6758
+
+ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 700}
+✅ 最优分数: 0.6778

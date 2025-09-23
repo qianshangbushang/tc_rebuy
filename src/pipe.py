@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from feature.behavior_transformer import BehaviorTransformer
+from feature.matrix_transformer import MatrixTransformer
 from feature.tfidf_transformer import TfidfTransformer
 
 try:
@@ -39,6 +40,9 @@ class TCDataConfig(BaseModel):
 
     cache_tfidf_feature: bool = True
     cache_tfidf_path: str = "../data/tfidf_feature.pkl"
+
+    cache_matrix_feature: bool = True
+    cache_matrix_path: str = "../data/matrix_feature.pkl"
     model: ModelConfig = ModelConfig()
 
 
@@ -125,6 +129,10 @@ class TCDataPipeline:
             cache_path=conf.cache_tfidf_path,
         )
 
+        self.matrix_transformer = MatrixTransformer(
+            n_components=10, random_state=42, enable_cache=conf.cache_matrix_feature, cache_path=conf.cache_matrix_path
+        )
+
         self.clean_pipe = create_clean_pipeline(conf)
         self.sample_pipe = None  # create_sample_pipeline(conf)
         self.model_pipe = create_model_pipeline(conf.model)
@@ -150,6 +158,7 @@ class TCDataPipeline:
         """
         self.behavior_transformer.fit(X, y)
         self.tfidf_transformer.fit(X, y)
+        self.matrix_transformer.fit(X, y)
 
         train_mask = y.isin([0, 1])
         test_mask = y.isnull()
@@ -162,6 +171,9 @@ class TCDataPipeline:
 
         X_train = self.tfidf_transformer.transform(X_train)
         X_test = self.tfidf_transformer.transform(X_test)
+
+        X_train = self.matrix_transformer.transform(X_train)
+        X_test = self.matrix_transformer.transform(X_test)
 
         drop_cols = ["user_id", "merchant_id", "activity_log"]
         X_train = X_train.drop(columns=[col for col in drop_cols if col in X_train.columns], errors="ignore")
@@ -343,10 +355,15 @@ class TCDataPipeline:
                 }
             elif self.conf.model.model_type == "lgb":
                 param_grid = {
-                    "classifier__n_estimators": [400, 500, 600],
-                    "classifier__max_depth": [3, 4, 5],
-                    "classifier__learning_rate": [0.04, 0.05, 0.06],
-                    "classifier__class_weight": ["balanced"],
+                    "classifier__n_estimators": [
+                        900,
+                        1000,
+                        1100,
+                        1200,
+                    ],
+                    "classifier__max_depth": [3],
+                    "classifier__learning_rate": [0.05, 0.06],
+                    "classifier__class_weight": [None],
                 }
 
         search_cls = GridSearchCV if search_type == "grid" else RandomizedSearchCV
@@ -450,8 +467,8 @@ def run():
         )
     )
 
-    # pipe.fit(X, y)
-    pipe.tune_model(X, y)
+    pipe.fit(X, y)
+    # pipe.tune_model(X, y)
 
     # if pipe.is_fitted:
     # pipe.export_prediction(X, y, filename="../output/prediction.csv")
