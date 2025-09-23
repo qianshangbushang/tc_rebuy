@@ -130,7 +130,7 @@ class TCDataPipeline:
         )
 
         self.matrix_transformer = MatrixTransformer(
-            n_components=10, random_state=42, enable_cache=conf.cache_matrix_feature, cache_path=conf.cache_matrix_path
+            n_components=80, random_state=42, enable_cache=conf.cache_matrix_feature, cache_path=conf.cache_matrix_path
         )
 
         self.clean_pipe = create_clean_pipeline(conf)
@@ -356,12 +356,12 @@ class TCDataPipeline:
             elif self.conf.model.model_type == "lgb":
                 param_grid = {
                     "classifier__n_estimators": [
-                        900,
-                        1000,
+                        # 900,
+                        # 1000,
                         1100,
-                        1200,
+                        # 1200,
                     ],
-                    "classifier__max_depth": [3],
+                    "classifier__max_depth": [3, 4, 5],
                     "classifier__learning_rate": [0.05, 0.06],
                     "classifier__class_weight": [None],
                 }
@@ -463,12 +463,12 @@ def run():
             fill_mode_cols=["gender"],
             # cache_behavior_feature=True,
             # cache_behavior_path="../data/cleaned_data.pkl",
-            model=ModelConfig(model_type="lgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
+            model=ModelConfig(model_type="xgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
         )
     )
 
-    pipe.fit(X, y)
-    # pipe.tune_model(X, y)
+    # pipe.fit(X, y)
+    pipe.tune_model(X, y)
 
     # if pipe.is_fitted:
     # pipe.export_prediction(X, y, filename="../output/prediction.csv")

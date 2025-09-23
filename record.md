@@ -26,5 +26,14 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 ✅ 最优参数: {'classifier__class_weight': 'balanced', 'classifier__learning_rate': 0.06, 'classifier__max_depth': 3, 'classifier__n_estimators': 600}
 ✅ 最优分数: 0.6758
 
+#### 增加矩阵分解
  最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 700}
 ✅ 最优分数: 0.6778
+
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
+✅ 最优分数: 0.6781
+
+
+#### 改良矩阵分解
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
+✅ 最优分数: 0.6829

@@ -15,11 +15,11 @@ class MatrixTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        n_components: int = 50,
-        sample_users: int = 100000,
+        n_components: int = 80,
+        sample_users: int = 200000,
         sample_merchants: int = 5000,
-        sample_categories: int = 1000,
-        sample_brands: int = 3000,
+        sample_categories: int = 1300,
+        sample_brands: int = 4000,
         min_interactions: int = 2,
         target_date: str = "1111",  # 目标购买行为日期
         enable_cache: bool = True,
@@ -301,86 +301,42 @@ class MatrixTransformer(BaseEstimator, TransformerMixin):
             gc.collect()
 
     def _compute_sample_features(self, X, y):
-        """计算样本级别的cat/brand特征"""
         print("🔄 计算样本级别的cat/brand特征...")
 
-        # 确定需要处理的样本
+        # 1. 选出有效样本
         if y is not None:
             valid_mask = y != -1
-            valid_samples = X[valid_mask][["user_id", "merchant_id"]].copy()
+            valid_samples = X[valid_mask][["user_id", "merchant_id"]].drop_duplicates()
         else:
-            valid_samples = X[["user_id", "merchant_id"]].copy()
+            valid_samples = X[["user_id", "merchant_id"]].drop_duplicates()
 
-        valid_samples = valid_samples.drop_duplicates()
-
-        # 准备目标日期的购买行为数据
+        # 2. 准备交互数据
         df = self._prepare_interaction_data(X)
+        target_purchases = df
 
-        # 过滤目标日期的购买行为（action_type=1表示购买）
-        target_purchases = df[(df["time"].str.contains(self.target_date, na=False)) & (df["action_type"] == "1")].copy()
+        # 2.1 只保留 valid_samples 中的行为数据
+        target_purchases = target_purchases.merge(valid_samples, on=["user_id", "merchant_id"], how="inner")
 
-        print(f"  📊 目标日期({self.target_date})购买行为: {len(target_purchases)} 条")
+        # 后续流程保持不变
+        cat_emb_cols = [col for col in self.category_embeddings.columns if col.startswith("cat_emb")]
+        brand_emb_cols = [col for col in self.brand_embeddings.columns if col.startswith("brand_emb")]
 
-        sample_features_list = []
+        cat_emb_df = self.category_embeddings[["cate_id"] + cat_emb_cols]
+        brand_emb_df = self.brand_embeddings[["brand_id"] + brand_emb_cols]
 
-        for _, row in valid_samples.iterrows():
-            user_id = row["user_id"]
-            merchant_id = row["merchant_id"]
+        purchases_with_cat_emb = target_purchases.merge(cat_emb_df, on="cate_id", how="left")
+        purchases_with_brand_emb = target_purchases.merge(brand_emb_df, on="brand_id", how="left")
 
-            # 获取该用户在目标商户在目标日期的购买行为
-            user_merchant_purchases = target_purchases[
-                (target_purchases["user_id"] == user_id) & (target_purchases["merchant_id"] == merchant_id)
-            ]
+        cat_group = purchases_with_cat_emb.groupby(["user_id", "merchant_id"])[cat_emb_cols].mean().reset_index()
+        brand_group = purchases_with_brand_emb.groupby(["user_id", "merchant_id"])[brand_emb_cols].mean().reset_index()
 
-            # 初始化特征
-            sample_feature = {
-                "user_id": user_id,
-                "merchant_id": merchant_id,
-            }
+        sample_features = valid_samples.merge(cat_group, on=["user_id", "merchant_id"], how="left")
+        sample_features = sample_features.merge(brand_group, on=["user_id", "merchant_id"], how="left")
 
-            # Cat embedding均值
-            if len(user_merchant_purchases) > 0 and self.category_embeddings is not None:
-                purchase_cats = user_merchant_purchases["cate_id"].unique()
-                cat_embeddings = self.category_embeddings[self.category_embeddings["cate_id"].isin(purchase_cats)]
+        for col in cat_emb_cols + brand_emb_cols:
+            sample_features[col] = sample_features[col].fillna(0.0)
 
-                if len(cat_embeddings) > 0:
-                    # 计算均值
-                    cat_emb_cols = [col for col in cat_embeddings.columns if col.startswith("cat_emb")]
-                    cat_mean = cat_embeddings[cat_emb_cols].mean()
-                    sample_feature.update(cat_mean.to_dict())
-                else:
-                    # 填充零向量
-                    for i in range(self.n_components):
-                        sample_feature[f"cat_emb_{i}"] = 0.0
-            else:
-                # 填充零向量
-                for i in range(self.n_components):
-                    sample_feature[f"cat_emb_{i}"] = 0.0
-
-            # Brand embedding均值
-            if len(user_merchant_purchases) > 0 and self.brand_embeddings is not None:
-                purchase_brands = user_merchant_purchases["brand_id"].unique()
-                brand_embeddings = self.brand_embeddings[self.brand_embeddings["brand_id"].isin(purchase_brands)]
-
-                if len(brand_embeddings) > 0:
-                    # 计算均值
-                    brand_emb_cols = [col for col in brand_embeddings.columns if col.startswith("brand_emb")]
-                    brand_mean = brand_embeddings[brand_emb_cols].mean()
-                    sample_feature.update(brand_mean.to_dict())
-                else:
-                    # 填充零向量
-                    for i in range(self.n_components):
-                        sample_feature[f"brand_emb_{i}"] = 0.0
-            else:
-                # 填充零向量
-                for i in range(self.n_components):
-                    sample_feature[f"brand_emb_{i}"] = 0.0
-
-            sample_features_list.append(sample_feature)
-
-        # 转换为DataFrame
-        self.sample_features = pd.DataFrame(sample_features_list)
-
+        self.sample_features = sample_features
         print(f"  ✅ 样本特征计算完成: {len(self.sample_features)} 个样本")
 
     def _load_from_cache(self, cached_data):
