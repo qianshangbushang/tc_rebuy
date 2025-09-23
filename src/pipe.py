@@ -163,6 +163,10 @@ class TCDataPipeline:
         X_train = self.tfidf_transformer.transform(X_train)
         X_test = self.tfidf_transformer.transform(X_test)
 
+        drop_cols = ["user_id", "merchant_id", "activity_log"]
+        X_train = X_train.drop(columns=[col for col in drop_cols if col in X_train.columns], errors="ignore")
+        # X_test = X_test.drop(columns=[col for col in drop_cols if col in X_test.columns], errors="ignore")
+
         return X_train, y_train, X_test, y_test
 
     def fit(self, X, y):
@@ -339,10 +343,10 @@ class TCDataPipeline:
                 }
             elif self.conf.model.model_type == "lgb":
                 param_grid = {
-                    "classifier__n_estimators": [200, 500, 1000],
-                    "classifier__max_depth": [4, 6, 10],
-                    "classifier__learning_rate": [0.05, 0.1, 0.2],
-                    "classifier__class_weight": ["balanced", None],
+                    "classifier__n_estimators": [400, 500, 600],
+                    "classifier__max_depth": [3, 4, 5],
+                    "classifier__learning_rate": [0.04, 0.05, 0.06],
+                    "classifier__class_weight": ["balanced"],
                 }
 
         search_cls = GridSearchCV if search_type == "grid" else RandomizedSearchCV
@@ -354,7 +358,7 @@ class TCDataPipeline:
                 cv=cv,
                 scoring=scoring,
                 verbose=2,
-                n_jobs=-1,
+                n_jobs=12,
             )
         else:
             search = search_cls(
@@ -375,7 +379,7 @@ class TCDataPipeline:
         self.is_fitted = True
         return search
 
-    def export_prediction(self, X: pd.DataFrame, filename="prediction.csv"):
+    def export_prediction(self, X: pd.DataFrame, y, filename="prediction.csv"):
         """
         导出预测结果到 prediction.csv
         格式：user_id, merchant_id, prob
@@ -383,7 +387,7 @@ class TCDataPipeline:
         if not self.is_fitted:
             raise ValueError("模型尚未训练，无法导出预测结果。")
 
-        _, _, X_test, _ = self.preprocess(X)
+        _, _, X_test, _ = self.preprocess(X, y)
 
         # 只保留训练用的特征
         drop_cols = ["user_id", "merchant_id", "activity_log"]
@@ -446,11 +450,11 @@ def run():
         )
     )
 
-    pipe.fit(X, y)
+    # pipe.fit(X, y)
     pipe.tune_model(X, y)
 
-    if pipe.is_fitted:
-        pipe.export_prediction(X, filename="../output/prediction.csv")
+    # if pipe.is_fitted:
+    # pipe.export_prediction(X, y, filename="../output/prediction.csv")
 
 
 if __name__ == "__main__":
