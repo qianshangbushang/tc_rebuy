@@ -37,3 +37,8 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 #### 改良矩阵分解
 ✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
 ✅ 最优分数: 0.6829
+
+
+### 增加先验概率特征
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
+✅ 最优分数: 0.6837
