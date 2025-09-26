@@ -11,6 +11,8 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
         self.user_feature = None
         self.merchant_feature = None
         self.user_merchant_feature = None
+        self.gender_feature = None
+        self.age_feature = None
 
         self.enable_cache = enable_cache
         self.cache_path = cache_path
@@ -23,6 +25,8 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
             self.user_feature = feature.get("user_feature", None)
             self.merchant_feature = feature.get("merchant_feature", None)
             self.user_merchant_feature = feature.get("user_merchant_feature", None)
+            self.age_feature = feature.get("age_feature", None)
+            self.gender_feature = feature.get("gender_feature", None)
             print("✅ 特征加载完成")
             return
 
@@ -32,6 +36,8 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
         self.create_user_feature(df)
         self.create_merchant_feature(df)
         self.create_user_merchant_feature(df)
+        self.create_geneder_feature(df)
+        self.create_age_feature(df)
         print("✅ 特征计算完成")
 
         if self.enable_cache:
@@ -41,6 +47,8 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
                         "user_feature": self.user_feature,
                         "merchant_feature": self.merchant_feature,
                         "user_merchant_feature": self.user_merchant_feature,
+                        "gender_feature": self.gender_feature,
+                        "age_feature": self.age_feature,
                     },
                     f,
                 )
@@ -51,6 +59,8 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
         df = df.merge(self.user_feature, on="user_id", how="left")
         df = df.merge(self.merchant_feature, on="merchant_id", how="left")
         df = df.merge(self.user_merchant_feature, on=["user_id", "merchant_id"], how="left")
+        df = df.merge(self.age_feature, on="age_range", how="left")
+        df = df.merge(self.gender_feature, on="gender", how="left")
         # df = df.drop(columns=["user_id", "merchant_id", "activity_log"], errors="ignore")
         print(f"🔄 特征合并后数据形状: {df.shape}")
         return df
@@ -203,6 +213,173 @@ class BehaviorTransformer(BaseEstimator, TransformerMixin):
             user_total_interactions,
             merchant_total_interactions,
             df,
+        )
+        gc.collect()
+        return self
+
+    def create_geneder_feature(self, df: pd.DataFrame):
+        print("🔄 计算性别聚合特征...")
+
+        df = df[df["gender"].notnull()]
+        if df.empty:
+            print("⚠️ 性别数据为空，无法计算性别聚合特征")
+            return
+        gender_size = df.groupby("gender").size()
+
+        # 行为占比
+        action_ratio = (
+            df.groupby(["gender", "action_type"])
+            .size()
+            .div(gender_size, level="gender")
+            .unstack(fill_value=0)
+            .add_prefix("gender_action_ratio_")
+        )
+        action_ratio.columns.name = None
+
+        # 每个月行为占比
+        df["month"] = df["time"].str[:2].astype(int)
+        month_ratio = (
+            df.groupby(["gender", "month"])
+            .size()
+            .div(gender_size, level="gender")
+            .unstack(fill_value=0)
+            .add_prefix("gender_month_ratio_")
+        )
+        month_ratio.columns.name = None
+
+        # 月-行为占比
+        month_action_ratio = df.pivot_table(
+            index="gender", columns=["month", "action_type"], aggfunc="size", fill_value=0
+        ).div(gender_size, axis=0)
+        month_action_ratio.columns = [
+            f"gender_time_action_ratio_month_{m}_action_{a}" for m, a in month_action_ratio.columns
+        ]
+
+        # 交互商品数，分类数，产品数, 商店数
+        uniq_stats = df.groupby("gender").agg(
+            gender_uniq_item_count=("item_id", "nunique"),
+            gender_uniq_cate_count=("cate_id", "nunique"),
+            gender_uniq_brand_count=("brand_id", "nunique"),
+            gender_uniq_user_count=("user_id", "nunique"),
+            gender_uniq_merchant_count=("merchant_id", "nunique"),
+        )
+        uniq_stats.columns.name = None
+
+        # 各行为下唯一对象数
+        def build_unique(feature_col: str, prefix: str):
+            t = df.groupby(["gender", "action_type"])[feature_col].nunique().unstack(fill_value=0).add_prefix(prefix)
+            t.columns.name = None
+            return t
+
+        item_action_unqiue = build_unique("item_id", "gender_item_action_unqique_")
+        cate_action_unqiue = build_unique("cate_id", "gender_cate_action_unqique_")
+        brand_action_unqiue = build_unique("brand_id", "gender_brand_action_unqique_")
+        merch_action_unqiue = build_unique("merchant_id", "gender_merchant_action_unqique_")
+
+        self.gender_feature = (
+            action_ratio.join(month_ratio, how="outer")
+            .join(month_action_ratio, how="outer")
+            .join(uniq_stats, how="outer")
+            .join(item_action_unqiue, how="outer")
+            .join(cate_action_unqiue, how="outer")
+            .join(brand_action_unqiue, how="outer")
+            .join(merch_action_unqiue, how="outer")
+        )
+        self.gender_feature = self.gender_feature.reset_index()
+        print("性别特征计算完成")
+        print("性别特征：\n", self.gender_feature)
+
+        del (
+            action_ratio,
+            month_ratio,
+            month_action_ratio,
+            uniq_stats,
+            item_action_unqiue,
+            cate_action_unqiue,
+            brand_action_unqiue,
+            merch_action_unqiue,
+        )
+        gc.collect()
+        return self
+
+    def create_age_feature(self, df: pd.DataFrame):
+        print("🔄 计算年龄聚合特征...")
+
+        # df["age_group"] = pd.cut(df["age"], bins=[0, 18, 25, 35, 45, 55, 65, 100], right=False)
+        age_group_size = df.groupby("age_range").size()
+
+        # 行为占比
+        action_ratio = (
+            df.groupby(["age_range", "action_type"])
+            .size()
+            .div(age_group_size, level="age_range")
+            .unstack(fill_value=0)
+            .add_prefix("age_action_ratio_")
+        )
+        action_ratio.columns.name = None
+
+        # 每个月行为占比
+        df["month"] = df["time"].str[:2].astype(int)
+        month_ratio = (
+            df.groupby(["age_range", "month"])
+            .size()
+            .div(age_group_size, level="age_range")
+            .unstack(fill_value=0)
+            .add_prefix("age_month_ratio_")
+        )
+        month_ratio.columns.name = None
+
+        # 月-行为占比
+        month_action_ratio = df.pivot_table(
+            index="age_range", columns=["month", "action_type"], aggfunc="size", fill_value=0
+        ).div(age_group_size, axis=0)
+        month_action_ratio.columns = [
+            f"age_time_action_ratio_month_{m}_action_{a}" for m, a in month_action_ratio.columns
+        ]
+
+        # 交互商品数，分类数，产品数, 商店数
+        uniq_stats = df.groupby("age_range").agg(
+            age_uniq_item_count=("item_id", "nunique"),
+            age_uniq_cate_count=("cate_id", "nunique"),
+            age_uniq_brand_count=("brand_id", "nunique"),
+            age_uniq_user_count=("user_id", "nunique"),
+            age_uniq_merchant_count=("merchant_id", "nunique"),
+        )
+        uniq_stats.columns.name = None
+
+        # 各行为下唯一对象数
+        def build_unique(feature_col: str, prefix: str):
+            t = df.groupby(["age_range", "action_type"])[feature_col].nunique().unstack(fill_value=0).add_prefix(prefix)
+            t.columns.name = None
+            return t
+
+        item_action_unqiue = build_unique("item_id", "age_item_action_unqiue_")
+        cate_action_unqiue = build_unique("cate_id", "age_cate_action_unqiue_")
+        brand_action_unqiue = build_unique("brand_id", "age_brand_action_unqiue_")
+        merch_action_unqiue = build_unique("merchant_id", "age_merchant_action_unqiue_")
+
+        self.age_feature = (
+            action_ratio.join(month_ratio, how="outer")
+            .join(month_action_ratio, how="outer")
+            .join(uniq_stats, how="outer")
+            .join(item_action_unqiue, how="outer")
+            .join(cate_action_unqiue, how="outer")
+            .join(brand_action_unqiue, how="outer")
+            .join(merch_action_unqiue, how="outer")
+        )
+        self.age_feature = self.age_feature.reset_index()
+        print("年龄特征计算完成")
+        print("年龄特征：\n", self.age_feature)
+
+        del (
+            action_ratio,
+            month_ratio,
+            month_action_ratio,
+            uniq_stats,
+            item_action_unqiue,
+            cate_action_unqiue,
+            brand_action_unqiue,
+            merch_action_unqiue,
         )
         gc.collect()
         return self

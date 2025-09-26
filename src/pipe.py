@@ -183,6 +183,8 @@ class TCDataPipeline:
         X_train = self.prev_transformer.transform(X_train)
         X_test = self.prev_transformer.transform(X_test)
 
+        print("特征处理完成, 当前数据形状:")
+        print(f"训练集: {X_train.shape},  测试集: {X_test.shape}")
         drop_cols = ["user_id", "merchant_id", "activity_log"]
         X_train = X_train.drop(columns=[col for col in drop_cols if col in X_train.columns], errors="ignore")
         # X_test = X_test.drop(columns=[col for col in drop_cols if col in X_test.columns], errors="ignore")
@@ -369,8 +371,8 @@ class TCDataPipeline:
                         1100,
                         # 1200,
                     ],
-                    "classifier__max_depth": [3, 4, 5],
-                    "classifier__learning_rate": [0.05, 0.06],
+                    "classifier__max_depth": [3],
+                    "classifier__learning_rate": [0.05],
                     "classifier__class_weight": [None],
                 }
 
@@ -475,11 +477,11 @@ def run():
         )
     )
 
-    # pipe.fit(X, y)
-    pipe.tune_model(X, y)
+    pipe.fit(X, y)
+    # pipe.tune_model(X, y)
 
-    # if pipe.is_fitted:
-    # pipe.export_prediction(X, y, filename="../output/prediction.csv")
+    if pipe.is_fitted:
+        pipe.export_prediction(X, y, filename="../output/prediction.csv")
 
 
 if __name__ == "__main__":
