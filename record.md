@@ -37,3 +37,7 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 #### 改良矩阵分解
 ✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
 ✅ 最优分数: 0.6829
+
+### xgb
+✅ 最优参数: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500, 'classifier__scale_pos_weight': 7}
+✅ 最优分数: 0.6828
