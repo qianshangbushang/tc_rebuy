@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 
 from feature.behavior_transformer import BehaviorTransformer
 from feature.matrix_transformer import MatrixTransformer
+from feature.prev_transformer import PrevTransformer
 from feature.tfidf_transformer import TfidfTransformer
 
 try:
@@ -43,6 +44,9 @@ class TCDataConfig(BaseModel):
 
     cache_matrix_feature: bool = True
     cache_matrix_path: str = "../data/matrix_feature.pkl"
+
+    cache_prev_feature: bool = True
+    cache_prev_path: str = "../data/prev_feature.pkl"
     model: ModelConfig = ModelConfig()
 
 
@@ -132,7 +136,7 @@ class TCDataPipeline:
         self.matrix_transformer = MatrixTransformer(
             n_components=80, random_state=42, enable_cache=conf.cache_matrix_feature, cache_path=conf.cache_matrix_path
         )
-
+        self.prev_transformer = PrevTransformer(enable_cache=conf.cache_prev_feature, cache_path=conf.cache_prev_path)
         self.clean_pipe = create_clean_pipeline(conf)
         self.sample_pipe = None  # create_sample_pipeline(conf)
         self.model_pipe = create_model_pipeline(conf.model)
@@ -159,6 +163,7 @@ class TCDataPipeline:
         self.behavior_transformer.fit(X, y)
         self.tfidf_transformer.fit(X, y)
         self.matrix_transformer.fit(X, y)
+        self.prev_transformer.fit(X, y)
 
         train_mask = y.isin([0, 1])
         test_mask = y.isnull()
@@ -175,6 +180,11 @@ class TCDataPipeline:
         X_train = self.matrix_transformer.transform(X_train)
         X_test = self.matrix_transformer.transform(X_test)
 
+        X_train = self.prev_transformer.transform(X_train)
+        X_test = self.prev_transformer.transform(X_test)
+
+        print("特征处理完成, 当前数据形状:")
+        print(f"训练集: {X_train.shape},  测试集: {X_test.shape}")
         drop_cols = ["user_id", "merchant_id", "activity_log"]
         X_train = X_train.drop(columns=[col for col in drop_cols if col in X_train.columns], errors="ignore")
         # X_test = X_test.drop(columns=[col for col in drop_cols if col in X_test.columns], errors="ignore")
@@ -361,8 +371,8 @@ class TCDataPipeline:
                         1100,
                         # 1200,
                     ],
-                    "classifier__max_depth": [3, 4, 5],
-                    "classifier__learning_rate": [0.05, 0.06],
+                    "classifier__max_depth": [3],
+                    "classifier__learning_rate": [0.05],
                     "classifier__class_weight": [None],
                 }
 
@@ -463,15 +473,15 @@ def run():
             fill_mode_cols=["gender"],
             # cache_behavior_feature=True,
             # cache_behavior_path="../data/cleaned_data.pkl",
-            model=ModelConfig(model_type="xgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
+            model=ModelConfig(model_type="lgb", n_estimators=500, max_depth=4, scale_pos_weight=7.0),
         )
     )
 
-    # pipe.fit(X, y)
-    pipe.tune_model(X, y)
+    pipe.fit(X, y)
+    # pipe.tune_model(X, y)
 
-    # if pipe.is_fitted:
-    # pipe.export_prediction(X, y, filename="../output/prediction.csv")
+    if pipe.is_fitted:
+        pipe.export_prediction(X, y, filename="../output/prediction.csv")
 
 
 if __name__ == "__main__":

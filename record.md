@@ -41,3 +41,13 @@ param: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifi
 ### xgb
 ✅ 最优参数: {'classifier__learning_rate': 0.05, 'classifier__max_depth': 4, 'classifier__n_estimators': 500, 'classifier__scale_pos_weight': 7}
 ✅ 最优分数: 0.6828
+
+
+
+### 增加先验概率特征
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
+✅ 最优分数: 0.6837
+
+### 增加性别和年龄的先验概率特征
+✅ 最优参数: {'classifier__class_weight': None, 'classifier__learning_rate': 0.05, 'classifier__max_depth': 3, 'classifier__n_estimators': 1100}
+✅ 最优分数: 0.6852
