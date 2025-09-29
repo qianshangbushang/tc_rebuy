@@ -28,17 +28,17 @@ def load_exploded_dataframe(nrow=None, special_sample_frac=0.1):
         ":", expand=True
     )
 
-    special_mask = df_explode["time_str"].isin(["0618", "1111"])
-    special_df = df_explode[special_mask]
-    normal_df = df_explode[~special_mask]
+    # special_mask = df_explode["time_str"].isin(["0618", "1111"])
+    # special_df = df_explode[special_mask]
+    # normal_df = df_explode[~special_mask]
 
-    # 对特殊日期采样（如只保留10%）
-    sampled_special_df = special_df.sample(frac=0.1, random_state=42)
+    # # 对特殊日期采样（如只保留10%）
+    # sampled_special_df = special_df.sample(frac=0.1, random_state=42)
 
-    # 合并采样后的数据
-    df_explode = pd.concat([normal_df, sampled_special_df], ignore_index=True)
+    # # 合并采样后的数据
+    # df_explode = pd.concat([normal_df, sampled_special_df], ignore_index=True)
 
-    return df_explode
+    return df_explode.drop(columns=["log_list"])
 
 
 def run(mode="dev"):
@@ -70,6 +70,7 @@ def run(mode="dev"):
 
     # 读取数据
     df_explode = load_exploded_dataframe(nrow=nrows)
+    print("读取数据样本数:", len(df_explode))
 
     label_encoder = create_global_labelencoder(
         df_explode,
@@ -312,9 +313,9 @@ def predict_with_best_model(
 
 
 if __name__ == "__main__":
-    # run(mode="prod")
+    run(mode="prod")
     # run()
     # test_build_merchant_features()
-    test_build_sequence_features()
+    # test_build_sequence_features()
     # test_build_user_features()
     # predict_with_best_model()

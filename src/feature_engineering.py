@@ -9,36 +9,70 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from tqdm import tqdm
 
 
-def create_global_labelencoder(df_explode: pd.DataFrame, columns: list, cache_dir: str) -> LabelEncoder:
-    """为指定的列创建全局LabelEncoder
-
-    Args:
-        df: 原始数据
-        columns: 需要编码的列名列表
-    Returns:
-        LabelEncoder对象
+def create_global_labelencoder(
+    df_explode: pd.DataFrame,
+    columns: list,
+    cache_dir: str,
+    force_rebuild: bool = False,
+    verbose: int = 1,
+    sample_print: int = 5,
+) -> LabelEncoder:
     """
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir, exist_ok=True)
+    加速版全局 LabelEncoder 构建：
+      1. 向量化拼接前缀  col:value  (避免 Python 循环逐条拼接)
+      2. 只做一次 unique（把所有列拼接后再 unique），减少多次 set 更新开销
+      3. 支持缓存与可控打印
+      4. 支持强制重建 & 采样输出
+    """
+    os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, "global_label_encoder.pkl")
-    if os.path.exists(cache_path):
+
+    if (not force_rebuild) and os.path.exists(cache_path):
+        if verbose:
+            print(f"[LabelEncoder] 使用缓存: {cache_path}")
         with open(cache_path, "rb") as f:
             return pickle.load(f)
 
-    all_values = set()
-
+    # 统一转换为 string/保留 NA -> 填 UNK（vectorized）
+    prefixed_series_list = []
     for col in columns:
-        col_unique = df_explode[col].dropna().unique().tolist()
-        col_unique = [f"{col}:{val}" for val in col_unique] + [f"{col}:UNK"]
-        print(f"列 {col} 的唯一值数量: {len(col_unique)}")
-        print(f"示例值: {col_unique}")
-        all_values.update(col_unique)
+        s = df_explode[col]
 
-    label_encoder = LabelEncoder()
-    label_encoder.fit(list(all_values))
+        # 快速转字符串；对已经是字符串的列不会复制
+        s = s.astype("string", copy=False)
+
+        # 填充缺失
+        s = s.fillna("UNK")
+
+        # 拼接前缀（利用 pandas 的广播 + 向量化）
+        # 结果仍是一个 Series，不转 list，避免 Python 层循环
+        prefixed_series = s.map(lambda x: f"{col}:{x}")
+        prefixed_series_list.append(prefixed_series)
+
+    # 合并后一次 unique
+    all_prefixed = pd.concat(prefixed_series_list, ignore_index=True)
+
+    # unique 使用底层哈希，速度快；结果 ndarray
+    unique_values = pd.unique(all_prefixed)
+
+    # 保险：确保每列的 UNK 存在（大多数情况下已包含）
+    # 这里用列表推导避免重复构造新的大列表
+    unk_tokens = [f"{col}:UNK" for col in columns]
+    unique_values = np.unique(np.concatenate([unique_values, np.array(unk_tokens, dtype=object)]))
+
+    if verbose:
+        print(f"[LabelEncoder] 总类别数: {len(unique_values)}")
+        if sample_print > 0:
+            print(f"[LabelEncoder] 示例: {unique_values[:sample_print].tolist()} ...")
+
+    le = LabelEncoder()
+    le.fit(unique_values)
+
     with open(cache_path, "wb") as f:
-        pickle.dump(label_encoder, f)
-    return label_encoder
+        pickle.dump(le, f)
+    if verbose:
+        print(f"[LabelEncoder] 已保存到: {cache_path}")
+    return le
 
 
 def build_user_conversion_rates(df_explode: pd.DataFrame) -> pd.DataFrame:
