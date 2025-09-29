@@ -233,9 +233,9 @@ def build_user_stat_features(df_explode: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_user_features(
-    df: pd.DataFrame,
+    df_explode: pd.DataFrame,
     global_le_encoder: LabelEncoder = None,
-    high_freq_threshold: int = 100000,
+    high_freq_threshold: int = 300000,
     cache_dir: str = "./data/cache",
 ) -> tuple[pd.DataFrame, dict]:
     """构建用户特征
@@ -255,7 +255,7 @@ def build_user_features(
             return pickle.load(f)
 
     # 展开日志
-    df_explode = df.copy()
+    # df_explode = df.copy()
     df_explode["log_list"] = df_explode["activity_log"].str.split("#")
     df_explode = df_explode.explode("log_list")
     df_explode[["item_id", "cate_id", "brand_id", "time_str", "action_type"]] = df_explode["log_list"].str.split(
@@ -266,7 +266,7 @@ def build_user_features(
     user_action_stats = build_user_stat_features(df_explode)
 
     # 用户基础属性特征
-    user_basic = df[["user_id", "age_range", "gender"]].drop_duplicates()
+    user_basic = df_explode[["user_id", "age_range", "gender"]].drop_duplicates()
     user_basic["age_range_enc"] = global_le_encoder.transform(
         user_basic["age_range"].apply(lambda x: f"age_range:{x}" if pd.notna(x) else "age_range:UNK")
     )
@@ -317,7 +317,7 @@ def build_user_features(
     feature_dims = {
         "num_stats_cols": num_stats_cols,  # 数值特征
         "cat_cols": cat_cols,  # 类别特征
-        "num_feats": user_features.shape[1] - 1,  # 数值特征总数
+        "num_feats": len(num_stats_cols),  # 数值特征总数
         "cat_feats": len(cat_cols),  # 类别特征总数
     }
 
