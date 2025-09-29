@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import numpy as np
 import pandas as pd
 import torch
@@ -8,16 +10,54 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 
+def process_row(
+    row,
+    seq_len,
+    item_encoders,
+    cate_encoders,
+    brand_encoders,
+    merchant_encoders,
+    action_encoders,
+    label_col,
+):
+    log = row["activity_log"]
+    actions = [x.split(":") for x in log.split("#")]
+    times = pd.to_datetime(["2024" + x[3] for x in actions], errors="coerce")
+    time_gap = np.diff(times.values).astype("timedelta64[D]").astype(float) if len(times) > 1 else np.zeros(1)
+    time_gap = np.pad(time_gap, (0, max(0, seq_len - len(time_gap))), "constant")
+    seq = np.array(
+        [
+            [
+                item_encoders.transform([x[0]])[0],
+                cate_encoders.transform([x[1]])[0],
+                brand_encoders.transform([x[2]])[0],
+                merchant_encoders.transform([str(row["merchant_id"])])[0],
+                action_encoders.transform([x[4]])[0],
+            ]
+            for x in actions
+        ]
+    )
+    if len(seq) < seq_len:
+        pad = np.zeros((seq_len - len(seq), seq.shape[1]))
+        seq = np.vstack([seq, pad])
+    else:
+        seq = seq[-seq_len:]
+        time_gap = time_gap[-seq_len:]
+    label = row[label_col]
+    return seq, time_gap, label
+
+
 class BehaviorSequenceDataset(Dataset):
     """
     用户-商户行为序列数据集
-    每个样本为一行数据，自动解析 activity_log 并编码
+    每个样本为一行数据，提前解析 activity_log 并编码，getitem 直接取数据
     """
 
     def __init__(self, df, seq_len=30, label_col="label"):
         self.seq_len = seq_len
         self.label_col = label_col
         df[label_col] = (df[label_col] == 2).astype(int)  # 二分类
+        df = df[df["activity_log"].apply(lambda x: isinstance(x, str) and len(x) > 0)].copy()
         self.df = df.copy()
         self.item_encoders = LabelEncoder()
         self.cate_encoders = LabelEncoder()
@@ -25,6 +65,7 @@ class BehaviorSequenceDataset(Dataset):
         self.action_encoders = LabelEncoder()
         self.merchant_encoders = LabelEncoder()
         self.__init_encoders(df)
+        # self.__init_data(df)
 
     def __init_encoders(self, df):
         logs = df["activity_log"].dropna()
@@ -43,25 +84,91 @@ class BehaviorSequenceDataset(Dataset):
         print("action 类别数:", len(self.action_encoders.classes_))
         print("merchant 类别数:", len(self.merchant_encoders.classes_))
 
+    def __init_data(self, df):
+        self.seqs = []
+        self.time_gaps = []
+        self.labels = []
+
+        # 并行处理
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = []
+            for idx, row in df.iterrows():
+                futures.append(
+                    executor.submit(
+                        process_row,
+                        row,
+                        self.seq_len,
+                        self.item_encoders,
+                        self.cate_encoders,
+                        self.brand_encoders,
+                        self.merchant_encoders,
+                        self.action_encoders,
+                        self.label_col,
+                    )
+                )
+            for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="多进程处理行为序列数据"):
+                seq, time_gap, label = f.result()
+                self.seqs.append(seq)
+                self.time_gaps.append(time_gap)
+                self.labels.append(label)
+
+    def __init_data_v1(self, df):
+        # 提前处理所有样本，保存为列表
+        self.seqs = []
+        self.time_gaps = []
+        self.labels = []
+
+        for idx, row in tqdm(df.iterrows(), total=len(df), desc="处理行为序列数据"):
+            log = row["activity_log"]
+            actions = [x.split(":") for x in log.split("#")]
+            # 时间字符串补全年份（假设格式为 MMDD），如 "0101" -> "20240101"
+            times = pd.to_datetime(["2024" + x[3] for x in actions], errors="coerce")
+            time_gap = np.diff(times.values).astype("timedelta64[D]").astype(float) if len(times) > 1 else np.zeros(1)
+            time_gap = np.pad(time_gap, (0, max(0, self.seq_len - len(time_gap))), "constant")
+            seq = np.array(
+                [
+                    [
+                        self.item_encoders.transform([x[0]])[0],
+                        self.cate_encoders.transform([x[1]])[0],
+                        self.brand_encoders.transform([x[2]])[0],
+                        self.merchant_encoders.transform([str(row["merchant_id"])])[0],
+                        self.action_encoders.transform([x[4]])[0],
+                    ]
+                    for x in actions
+                ]
+            )
+            if len(seq) < self.seq_len:
+                pad = np.zeros((self.seq_len - len(seq), seq.shape[1]))
+                seq = np.vstack([seq, pad])
+            else:
+                seq = seq[-self.seq_len :]
+                time_gap = time_gap[-self.seq_len :]
+            label = row[self.label_col]
+            self.seqs.append(seq)
+            self.time_gaps.append(time_gap)
+            self.labels.append(label)
+
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
+        return self.process_row(self.df.iloc[idx])
+
+    def process_row(self, row):
         log = row["activity_log"]
         actions = [x.split(":") for x in log.split("#")]
         # 时间字符串补全年份（假设格式为 MMDD），如 "0101" -> "20240101"
-        times = pd.to_datetime(["2024" + x[3] for x in actions], errors="coerce")
+        times = pd.to_datetime(["2024" + x[3] for x in actions if len(x) > 3], errors="coerce")
         time_gap = np.diff(times.values).astype("timedelta64[D]").astype(float) if len(times) > 1 else np.zeros(1)
         time_gap = np.pad(time_gap, (0, max(0, self.seq_len - len(time_gap))), "constant")
         seq = np.array(
             [
                 [
-                    self.item_encoders.transform([x[0]])[0],
-                    self.cate_encoders.transform([x[1]])[0],
-                    self.brand_encoders.transform([x[2]])[0],
+                    self.item_encoders.transform([x[0]])[0] if len(x) > 0 else 0,
+                    self.cate_encoders.transform([x[1]])[0] if len(x) > 1 else 0,
+                    self.brand_encoders.transform([x[2]])[0] if len(x) > 2 else 0,
                     self.merchant_encoders.transform([str(row["merchant_id"])])[0],
-                    self.action_encoders.transform([x[4]])[0],
+                    self.action_encoders.transform([x[4]])[0] if len(x) > 4 else 0,
                 ]
                 for x in actions
             ]
@@ -138,13 +245,20 @@ def extract_all_ids(df):
 
 
 def train_gru_model(
-    df, seq_len=30, batch_size=128, epochs=10, lr=1e-3, device="cuda" if torch.cuda.is_available() else "cpu"
+    df, seq_len=30, batch_size=256, epochs=10, lr=1e-3, device="cuda" if torch.cuda.is_available() else "cpu"
 ):
     # 构建数据集
     dataset = BehaviorSequenceDataset(df, seq_len=seq_len, label_col="label")
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=10,
+        pin_memory=True if device == "cuda" else False,
+    )
     # 获取类别数
 
+    print("device:", device)
     # 构建模型
     model = GRURecModel(
         n_items=len(dataset.item_encoders.classes_),
@@ -155,10 +269,100 @@ def train_gru_model(
         seq_len=seq_len,
     ).to(device)
 
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"✅ 模型构建完成，参数量: {total_params}")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.BCELoss()
 
     # 训练
+    model.train()
+    for epoch in range(epochs):
+        losses = []
+        for seq, time_gap, label in tqdm(loader, desc=f"Epoch {epoch + 1}/{epochs}"):
+            seq, time_gap, label = seq.to(device), time_gap.to(device), label.to(device)
+            pred = model(seq, time_gap)
+            loss = criterion(pred, label)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+        print(f"Epoch {epoch + 1}: loss={np.mean(losses):.4f}")
+    return model, dataset
+
+
+class TransformerRecModel(nn.Module):
+    def __init__(
+        self,
+        n_items,
+        n_cates,
+        n_brands,
+        n_merchants,
+        n_actions,
+        emb_dim=32,
+        seq_len=30,
+        n_heads=4,
+        n_layers=2,
+        hidden_dim=64,
+    ):
+        super().__init__()
+        self.item_emb = nn.Embedding(n_items, emb_dim)
+        self.cate_emb = nn.Embedding(n_cates, emb_dim)
+        self.brand_emb = nn.Embedding(n_brands, emb_dim)
+        self.merchant_emb = nn.Embedding(n_merchants, emb_dim)
+        self.action_emb = nn.Embedding(n_actions, emb_dim)
+        self.time_fc = nn.Linear(1, emb_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=emb_dim * 5 + emb_dim, nhead=n_heads, dim_feedforward=hidden_dim, batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.fc = nn.Sequential(nn.Linear(emb_dim * 5 + emb_dim, 32), nn.ReLU(), nn.Linear(32, 1), nn.Sigmoid())
+
+    def forward(self, seq, time_gap):
+        # seq: [B, seq_len, 5]
+        item = self.item_emb(seq[:, :, 0])
+        cate = self.cate_emb(seq[:, :, 1])
+        brand = self.brand_emb(seq[:, :, 2])
+        merchant = self.merchant_emb(seq[:, :, 3])
+        action = self.action_emb(seq[:, :, 4])
+        time_gap = time_gap.unsqueeze(-1)
+        time_feat = self.time_fc(time_gap)
+        x = torch.cat([item, cate, brand, merchant, action, time_feat], dim=-1)
+        out = self.transformer(x)
+        out = out[:, -1, :]  # 取最后一个时间步
+        out = self.fc(out)
+        return out.squeeze(-1)
+
+
+# 替换 train_gru_model 里的模型构建部分
+def train_transformer_model(
+    df, seq_len=30, batch_size=256, epochs=10, lr=1e-3, device="cuda" if torch.cuda.is_available() else "cpu"
+):
+    dataset = BehaviorSequenceDataset(df, seq_len=seq_len, label_col="label")
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=20,
+        pin_memory=True if device == "cuda" else False,
+    )
+    print("device:", device)
+    model = TransformerRecModel(
+        n_items=len(dataset.item_encoders.classes_),
+        n_cates=len(dataset.cate_encoders.classes_),
+        n_brands=len(dataset.brand_encoders.classes_),
+        n_merchants=len(dataset.merchant_encoders.classes_),
+        n_actions=len(dataset.action_encoders.classes_),
+        emb_dim=8,
+        seq_len=seq_len,
+    ).to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"✅ Transformer模型构建完成，参数量: {total_params}")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.BCELoss()
+
     model.train()
     for epoch in range(epochs):
         losses = []
@@ -203,7 +407,7 @@ def load_data():
 
 def test_dataset():
     df = pd.read_csv("./data/format2/data_format2/train_format2.csv", nrows=1000)
-    dataset = BehaviorSequenceDataset(df, seq_len=30, label_col="label")
+    dataset = BehaviorSequenceDataset(df, seq_len=20, label_col="label")
     for r in dataset:
         seq, time_gap, label = r
         print("行为序列形状:", seq.shape)
@@ -212,10 +416,14 @@ def test_dataset():
 
 
 def run():
-    df = pd.read_csv("./data/format2/data_format2/train_format2.csv")
-    # 训练模型
-    model, dataset = train_gru_model(df, seq_len=30, batch_size=128, epochs=5)
-    # 评估模型
+    # df = pd.read_csv("./data/format2/data_format2/train_format2.csv")
+    # # 训练模型
+    # model, dataset = train_gru_model(df, seq_len=10, batch_size=128, epochs=5)
+    # # 评估模型
+    # evaluate_gru_model(model, dataset)
+
+    df = pd.read_csv("./data/format2/data_format2/train_format2.csv", nrows=10000)
+    model, dataset = train_transformer_model(df, seq_len=10, batch_size=128, epochs=5)
     evaluate_gru_model(model, dataset)
 
 
