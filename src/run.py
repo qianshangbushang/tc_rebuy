@@ -1,5 +1,6 @@
 """重构后的模型入口"""
 
+import gc
 import os
 
 import pandas as pd
@@ -16,6 +17,17 @@ from feature_engineering import (
 from rebuy_model import RebuyModel, evaluate, predict, train
 
 
+def create_explode_dataframe(df: pd.DataFrame):
+    """加载并展开数据集"""
+    df_explode = df.copy()
+    df_explode["log_list"] = df_explode["activity_log"].str.split("#")
+    df_explode = df_explode.explode("log_list")
+    df_explode[["item_id", "cate_id", "brand_id", "time_str", "action_type"]] = df_explode["log_list"].str.split(
+        ":", expand=True
+    )
+    return df_explode
+
+
 def load_exploded_dataframe(nrow=None, special_sample_frac=0.1):
     """加载并展开数据集"""
     df_train = pd.read_csv("./data/format2/data_format2/train_format2.csv", nrows=nrow)
@@ -28,17 +40,17 @@ def load_exploded_dataframe(nrow=None, special_sample_frac=0.1):
         ":", expand=True
     )
 
-    special_mask = df_explode["time_str"].isin(["0618", "1111"])
-    special_df = df_explode[special_mask]
-    normal_df = df_explode[~special_mask]
+    # special_mask = df_explode["time_str"].isin(["0618", "1111"])
+    # special_df = df_explode[special_mask]
+    # normal_df = df_explode[~special_mask]
 
-    # 对特殊日期采样（如只保留10%）
-    sampled_special_df = special_df.sample(frac=0.1, random_state=42)
+    # # 对特殊日期采样（如只保留10%）
+    # sampled_special_df = special_df.sample(frac=0.1, random_state=42)
 
-    # 合并采样后的数据
-    df_explode = pd.concat([normal_df, sampled_special_df], ignore_index=True)
+    # # 合并采样后的数据
+    # df_explode = pd.concat([normal_df, sampled_special_df], ignore_index=True)
 
-    return df_explode
+    return df_explode.drop(columns=["log_list"])
 
 
 def run(mode="dev"):
@@ -69,7 +81,12 @@ def run(mode="dev"):
     nrows = 10000 if mode == "dev" else None
 
     # 读取数据
-    df_explode = load_exploded_dataframe(nrow=nrows)
+    train_df = pd.read_csv("./data/format2/data_format2/train_format2.csv", nrows=nrows)
+    test_df = pd.read_csv("./data/format2/data_format2/test_format2.csv", nrows=nrows)
+    df = pd.concat([train_df, test_df])
+    df_explode = create_explode_dataframe(df)
+    del df, train_df, test_df  # 释放内存
+    gc.collect()
 
     label_encoder = create_global_labelencoder(
         df_explode,
@@ -81,6 +98,7 @@ def run(mode="dev"):
     print("\n1. 构建特征")
     # 用户特征
     user_features, user_feature_dims = build_user_features(
+        # df_explode,
         df_explode,
         global_le_encoder=label_encoder,
         cache_dir=config["cache_dir"],
@@ -89,6 +107,7 @@ def run(mode="dev"):
     # 商户特征
     merchant_features, merchant_feature_dims = build_merchant_features(
         df_explode,
+        # create_explode_dataframe(df),
         cache_dir=config["cache_dir"],
         global_le_encoder=label_encoder,
     )
@@ -96,6 +115,7 @@ def run(mode="dev"):
     # 序列特征
     sequence_features, encoders = build_sequence_features(
         df_explode,
+        # create_explode_dataframe(df),
         user_features,
         merchant_features,
         user_feature_dims=user_feature_dims,
@@ -105,6 +125,8 @@ def run(mode="dev"):
         global_le_encoder=label_encoder,
     )
 
+    del df_explode
+    gc.collect()
     # 2. 数据集划分
     print("\n2. 划分数据集")
     train_features, val_features, test_features = split_train_val_test(
@@ -313,8 +335,8 @@ def predict_with_best_model(
 
 if __name__ == "__main__":
     # run(mode="prod")
-    # run()
+    run(mode="prod")
     # test_build_merchant_features()
-    test_build_sequence_features()
+    # test_build_sequence_features()
     # test_build_user_features()
     # predict_with_best_model()
