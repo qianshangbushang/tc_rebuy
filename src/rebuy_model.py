@@ -177,7 +177,7 @@ class RebuyModel(nn.Module):
         )
 
         # 2.2 用户类别特征处理
-        self.user_cat_emb = nn.Embedding(user_cat_feat_dim, emb_dim)
+        # self.user_cat_emb = nn.Embedding(user_cat_feat_dim, emb_dim)
         self.user_cat_fc = nn.Sequential(
             nn.Linear(emb_dim * 2, hidden_dim * 2),  # 2是类别特征数量(age_range和gender)
             nn.LayerNorm(hidden_dim * 2),
@@ -250,11 +250,13 @@ class RebuyModel(nn.Module):
         """创建填充掩码"""
         return (seq.sum(dim=-1) == 0).to(seq.device)  # [batch_size, seq_len]
 
-    def forward(self, seq, time_gap, user_feat, merchant_feat):
+    def forward(self, seq, time_gap, user_num_feat, user_cat_feat, merchant_feat):
         """前向传播
 
         Args:
             seq: 序列输入 [batch_size, seq_len, num_features]
+            user_num_feat: 用户数值特征 [batch_size, user_num_feat_dim]
+            user_cat_feat: 用户类别特征 [batch_size, user_cat_feat_dim]
             time_gap: 时间间隔 [batch_size, seq_len]
             user_feat: 用户特征 [batch_size, user_feat_dim] (包含人口学特征)
             merchant_feat: 商户特征 [batch_size, merchant_feat_dim] (包含顾客群体特征分布)
@@ -292,11 +294,12 @@ class RebuyModel(nn.Module):
 
         # 2. 用户和商户特征处理
         # 2.1 用户数值特征处理
-        user_num = self.user_num_fc(user_feat)  # [batch_size, hidden_dim * 2]
+        user_num = self.user_num_fc(user_num_feat)  # [batch_size, hidden_dim * 2]
 
         # 2.2 用户类别特征处理
-        user_cat_emb = self.user_cat_emb(user_feat.long())  # [batch_size, num_cat_feats, emb_dim]
-        user_cat_feats = user_cat_emb.view(user_feat.size(0), -1)  # [batch_size, num_cat_feats * emb_dim]
+        # user_cat_emb = self.user_cat_emb(user_cat_feat.long())  # [batch_size, num_cat_feats, emb_dim]
+        user_cat_emb = self.item_emb(user_cat_feat.long())  # [batch_size, num_cat_feats, emb_dim]
+        user_cat_feats = user_cat_emb.view(user_cat_feat.size(0), -1)  # [batch_size, num_cat_feats * emb_dim]
         user_cat = self.user_cat_fc(user_cat_feats)  # [batch_size, hidden_dim * 2]
 
         # 2.3 商户特征处理
@@ -367,7 +370,7 @@ def train(
         # 训练
         model.train()
         train_losses = []
-        for seq, time_gap, user_num_feat, user_cat_feat, merchant_feat, label in tqdm(
+        for seq, time_gap, user_num_feat, user_cat_feat, merchant_feat, label, _, _ in tqdm(
             train_loader, desc=f"Epoch {epoch + 1}/{epochs}"
         ):
             seq = seq.to(device)
@@ -390,14 +393,15 @@ def train(
         model.eval()
         val_losses, val_preds, val_labels = [], [], []
         with torch.no_grad():
-            for seq, time_gap, user_feat, merchant_feat, label in val_loader:
+            for seq, time_gap, user_num_feat, user_cat_feat, merchant_feat, label, _, _ in val_loader:
                 seq = seq.to(device)
                 time_gap = time_gap.to(device)
-                user_feat = user_feat.to(device)
+                user_num_feat = user_num_feat.to(device)
+                user_cat_feat = user_cat_feat.to(device)
                 merchant_feat = merchant_feat.to(device)
                 label = label.to(device).unsqueeze(1)  # 改变形状为 [batch_size, 1]
 
-                pred = model(seq, time_gap, user_feat, merchant_feat)
+                pred = model(seq, time_gap, user_num_feat, user_cat_feat, merchant_feat)
                 loss = criterion(pred, label)
 
                 val_losses.append(loss.item())
@@ -458,14 +462,15 @@ def evaluate(
     preds, labels = [], []
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="评估"):
-            seq, time_gap, user_feat, merchant_feat, label, user_id, merchant_id = batch
+            seq, time_gap, user_num_feat, user_cat_feat, merchant_feat, label, user_id, merchant_id = batch
 
             seq = seq.to(device)
             time_gap = time_gap.to(device)
-            user_feat = user_feat.to(device)
+            user_num_feat = user_num_feat.to(device)
+            user_cat_feat = user_cat_feat.to(device)
             merchant_feat = merchant_feat.to(device)
 
-            logits = model(seq, time_gap, user_feat, merchant_feat)
+            logits = model(seq, time_gap, user_num_feat, user_cat_feat, merchant_feat)
             pred = torch.sigmoid(logits).cpu().numpy()
 
             preds.extend(pred.flatten())
@@ -509,18 +514,19 @@ def predict(
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="预测"):
-            seq, time_gap, user_feat, merchant_feat, _, user_id, merchant_id = batch
+            seq, time_gap, user_num_feat, user_cat_feature, merchant_feat, _, user_id, merchant_id = batch
 
             seq = seq.to(device)
             time_gap = time_gap.to(device)
-            user_feat = user_feat.to(device)
+            user_num_feat = user_num_feat.to(device)
+            user_cat_feature = user_cat_feature.to(device)
             merchant_feat = merchant_feat.to(device)
 
-            logits = model(seq, time_gap, user_feat, merchant_feat)
+            logits = model(seq, time_gap, user_num_feat, user_cat_feature, merchant_feat)
             prob = torch.sigmoid(logits).cpu().numpy()
 
-            results["user_id"].extend(user_id)
-            results["merchant_id"].extend(merchant_id)
+            results["user_id"].extend([int(x) for x in user_id])
+            results["merchant_id"].extend([int(x) for x in merchant_id])
             results["prob"].extend(prob.flatten())
 
     # 转换为DataFrame

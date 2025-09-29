@@ -245,49 +245,49 @@ def build_loaders(
     return train_loader, val_loader, test_loader, total_items, user_feat_dim, merchant_feat_dim
 
 
-# class RebuyDataset(Dataset):
-#     """二次购买预测数据集"""
+class RebuyDataset_v1(Dataset):
+    """二次购买预测数据集"""
 
-#     def __init__(self, sequence_features: dict, subset_indices: list = None):
-#         """初始化数据集
+    def __init__(self, sequence_features: dict, subset_indices: list = None):
+        """初始化数据集
 
-#         Args:
-#             sequence_features: 序列特征字典
-#             subset_indices: 子集索引，用于划分训练/验证/测试集
-#         """
-#         self.seqs = sequence_features["seqs"]
-#         self.time_gaps = sequence_features["time_gaps"]
-#         self.user_num_feats = sequence_features["user_num_feats"]
-#         self.user_cat_feats = sequence_features["user_cat_feats"]
-#         self.merchant_feats = sequence_features["merchant_feats"]
-#         self.labels = sequence_features["labels"]
-#         self.user_ids = sequence_features["user_ids"]
-#         self.merchant_ids = sequence_features["merchant_ids"]
+        Args:
+            sequence_features: 序列特征字典
+            subset_indices: 子集索引，用于划分训练/验证/测试集
+        """
+        self.seqs = sequence_features["seqs"]
+        self.time_gaps = sequence_features["time_gaps"]
+        self.user_num_feats = sequence_features["user_num_feats"]
+        self.user_cat_feats = sequence_features["user_cat_feats"]
+        self.merchant_feats = sequence_features["merchant_feats"]
+        self.labels = sequence_features["labels"]
+        self.user_ids = sequence_features["user_ids"]
+        self.merchant_ids = sequence_features["merchant_ids"]
 
-#         if subset_indices is not None:
-#             self.seqs = [self.seqs[i] for i in subset_indices]
-#             self.time_gaps = [self.time_gaps[i] for i in subset_indices]
-#             self.user_num_feats = [self.user_num_feats[i] for i in subset_indices]
-#             self.user_cat_feats = [self.user_cat_feats[i] for i in subset_indices]
-#             self.merchant_feats = [self.merchant_feats[i] for i in subset_indices]
-#             self.labels = [self.labels[i] for i in subset_indices]
-#             self.user_ids = [self.user_ids[i] for i in subset_indices]
-#             self.merchant_ids = [self.merchant_ids[i] for i in subset_indices]
+        if subset_indices is not None:
+            self.seqs = [self.seqs[i] for i in subset_indices]
+            self.time_gaps = [self.time_gaps[i] for i in subset_indices]
+            self.user_num_feats = [self.user_num_feats[i] for i in subset_indices]
+            self.user_cat_feats = [self.user_cat_feats[i] for i in subset_indices]
+            self.merchant_feats = [self.merchant_feats[i] for i in subset_indices]
+            self.labels = [self.labels[i] for i in subset_indices]
+            self.user_ids = [self.user_ids[i] for i in subset_indices]
+            self.merchant_ids = [self.merchant_ids[i] for i in subset_indices]
 
-#     def __len__(self):
-#         return len(self.seqs)
+    def __len__(self):
+        return len(self.seqs)
 
-#     def __getitem__(self, idx):
-#         return (
-#             torch.tensor(self.seqs[idx], dtype=torch.long),
-#             torch.tensor(self.time_gaps[idx], dtype=torch.float32),
-#             torch.tensor(self.user_num_feats[idx], dtype=torch.float32),
-#             torch.tensor(self.user_cat_feats[idx], dtype=torch.long),
-#             torch.tensor(self.merchant_feats[idx], dtype=torch.float32),
-#             torch.tensor(self.labels[idx], dtype=torch.float32),
-#             self.user_ids[idx],
-#             self.merchant_ids[idx],
-#         )
+    def __getitem__(self, idx):
+        return (
+            torch.tensor(self.seqs[idx], dtype=torch.long),
+            torch.tensor(self.time_gaps[idx], dtype=torch.float32),
+            torch.tensor(self.user_num_feats[idx], dtype=torch.float32),
+            torch.tensor(self.user_cat_feats[idx], dtype=torch.long),
+            torch.tensor(self.merchant_feats[idx], dtype=torch.float32),
+            torch.tensor(self.labels[idx], dtype=torch.float32),
+            self.user_ids[idx],
+            self.merchant_ids[idx],
+        )
 
 
 def split_train_val_test(
@@ -332,43 +332,43 @@ def split_train_val_test(
     return train_features, val_features, test_features
 
 
-# def build_dataloaders(
-#     train_features: dict, val_features: dict, test_features: dict, batch_size: int = 128, num_workers: int = 0
-# ) -> tuple[DataLoader, DataLoader, DataLoader]:
-#     """构建数据加载器
+def build_dataloaders(
+    train_features: dict, val_features: dict, test_features: dict, batch_size: int = 128, num_workers: int = 0
+) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """构建数据加载器
 
-#     Args:
-#         train_features: 训练集特征
-#         val_features: 验证集特征
-#         test_features: 测试集特征
-#         batch_size: 批次大小
-#         num_workers: 数据加载线程数
+    Args:
+        train_features: 训练集特征
+        val_features: 验证集特征
+        test_features: 测试集特征
+        batch_size: 批次大小
+        num_workers: 数据加载线程数
 
-#     Returns:
-#         训练集、验证集和测试集的数据加载器
-#     """
-#     train_dataset = RebuyDataset(train_features)
-#     val_dataset = RebuyDataset(val_features)
-#     test_dataset = RebuyDataset(test_features)
+    Returns:
+        训练集、验证集和测试集的数据加载器
+    """
+    train_dataset = RebuyDataset_v1(train_features)
+    val_dataset = RebuyDataset_v1(val_features)
+    test_dataset = RebuyDataset_v1(test_features)
 
-#     train_loader = DataLoader(
-#         train_dataset,
-#         batch_size=batch_size,
-#         shuffle=True,
-#         num_workers=num_workers,
-#         pin_memory=torch.cuda.is_available(),
-#     )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
-#     val_loader = DataLoader(
-#         val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available()
-#     )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available()
+    )
 
-#     test_loader = DataLoader(
-#         test_dataset,
-#         batch_size=batch_size,
-#         shuffle=False,
-#         num_workers=num_workers,
-#         pin_memory=torch.cuda.is_available(),
-#     )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
-#     return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader
