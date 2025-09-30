@@ -9,70 +9,61 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from tqdm import tqdm
 
 
-def create_global_labelencoder(
-    df_explode: pd.DataFrame,
-    columns: list,
-    cache_dir: str,
-    force_rebuild: bool = False,
-    verbose: int = 1,
-    sample_print: int = 5,
-) -> LabelEncoder:
-    """
-    加速版全局 LabelEncoder 构建：
-      1. 向量化拼接前缀  col:value  (避免 Python 循环逐条拼接)
-      2. 只做一次 unique（把所有列拼接后再 unique），减少多次 set 更新开销
-      3. 支持缓存与可控打印
-      4. 支持强制重建 & 采样输出
-    """
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, "global_label_encoder.pkl")
+def create_global_labelencoder(df_explode: pd.DataFrame, columns: list, cache_dir: str) -> LabelEncoder:
+    """为指定的列创建全局LabelEncoder
 
-    if (not force_rebuild) and os.path.exists(cache_path):
-        if verbose:
-            print(f"[LabelEncoder] 使用缓存: {cache_path}")
+    Args:
+        df_explode: 原始数据
+        columns: 需要编码的列名列表
+        cache_dir: 缓存目录
+
+    Returns:
+        LabelEncoder对象
+    """
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, "global_label_encoder.pkl")
+    if os.path.exists(cache_path):
         with open(cache_path, "rb") as f:
             return pickle.load(f)
 
-    # 统一转换为 string/保留 NA -> 填 UNK（vectorized）
-    prefixed_series_list = []
+    # 使用列表而不是集合，因为最终还是要转换为列表
+    all_values = []
+
+    # 预分配足够大的列表空间
+    # total_size = sum(df_explode[col].nunique() for col in columns)
+    all_values = []
+    # all_values.reserve(total_size + len(columns))  # 为UNK预留空间
+
+    # 使用更高效的字符串连接方式
     for col in columns:
-        s = df_explode[col]
+        # 使用nunique先获取唯一值数量
+        unique_count = df_explode[col].nunique()
+        print(f"列 {col} 的唯一值数量: {unique_count}")
 
-        # 快速转字符串；对已经是字符串的列不会复制
-        s = s.astype("string", copy=False)
+        # 使用numpy的unique函数，比pandas的unique更快
+        col_unique = pd.Series(df_explode[col].dropna().unique())
 
-        # 填充缺失
-        s = s.fillna("UNK")
+        # 使用vectorized操作替代列表推导
+        col_values = col + ":" + col_unique.astype(str)
 
-        # 拼接前缀（利用 pandas 的广播 + 向量化）
-        # 结果仍是一个 Series，不转 list，避免 Python 层循环
-        prefixed_series = s.map(lambda x: f"{col}:{x}")
-        prefixed_series_list.append(prefixed_series)
+        # 直接extend而不是update
+        all_values.extend(col_values)
+        # 添加UNK值
+        all_values.append(f"{col}:UNK")
 
-    # 合并后一次 unique
-    all_prefixed = pd.concat(prefixed_series_list, ignore_index=True)
+        # 只打印少量示例值
+        print(f"示例值: {col_values[:5]}")
 
-    # unique 使用底层哈希，速度快；结果 ndarray
-    unique_values = pd.unique(all_prefixed)
+    label_encoder = LabelEncoder()
+    # 直接使用列表训练，避免转换
+    label_encoder.fit(all_values)
 
-    # 保险：确保每列的 UNK 存在（大多数情况下已包含）
-    # 这里用列表推导避免重复构造新的大列表
-    unk_tokens = [f"{col}:UNK" for col in columns]
-    unique_values = np.unique(np.concatenate([unique_values, np.array(unk_tokens, dtype=object)]))
-
-    if verbose:
-        print(f"[LabelEncoder] 总类别数: {len(unique_values)}")
-        if sample_print > 0:
-            print(f"[LabelEncoder] 示例: {unique_values[:sample_print].tolist()} ...")
-
-    le = LabelEncoder()
-    le.fit(unique_values)
-
+    # 使用更高效的pickle协议
     with open(cache_path, "wb") as f:
-        pickle.dump(le, f)
-    if verbose:
-        print(f"[LabelEncoder] 已保存到: {cache_path}")
-    return le
+        pickle.dump(label_encoder, f, protocol=4)
+
+    return label_encoder
 
 
 def build_user_conversion_rates(df_explode: pd.DataFrame) -> pd.DataFrame:
@@ -149,7 +140,7 @@ def build_user_conversion_rates(df_explode: pd.DataFrame) -> pd.DataFrame:
     return user_df
 
 
-def build_high_freq_cate_user_action_dist(
+def build_high_freq_cate_user_action_dist_v1(
     df_explode: pd.DataFrame,
     cate_col: str = "cate_id",
     user_col: str = "user_id",
@@ -169,13 +160,17 @@ def build_high_freq_cate_user_action_dist(
     df_high_cate = df_explode[df_explode[cate_col].isin(high_freq_cates)][[user_col, cate_col, action_col]]
 
     # 3. 计算每个用户在这些类别上的行为分布（占比）
-    user_cate_action = (
-        df_high_cate.groupby([user_col, cate_col, action_col])
-        .size()
-        .groupby([user_col, cate_col])
-        .transform(lambda x: x / x.sum())
-        .reset_index(name="ratio")
-    )
+    counts = df_high_cate.groupby([user_col, cate_col, action_col]).size().reset_index(name="count")
+
+    # 2. 计算总和
+    totals = counts.groupby([user_col, cate_col])["count"].sum().reset_index()
+
+    # 3. 使用merge和向量化操作计算比例
+    user_cate_action = counts.merge(totals, on=[user_col, cate_col], suffixes=("", "_total"))
+    user_cate_action["ratio"] = user_cate_action["count"] / user_cate_action["count_total"]
+
+    # 4. 删除中间列
+    user_cate_action = user_cate_action.drop(["count", "count_total"], axis=1)
     print(user_cate_action.head(10))
 
     # 4. pivot为宽表
@@ -188,6 +183,54 @@ def build_high_freq_cate_user_action_dist(
 
     print(f"✅ 高频{cate_col}用户行为分布特征构建完成，输出形状: {result.shape}")
     print(result.head(10))
+    return result
+
+
+def build_high_freq_cate_user_action_dist(
+    df_explode: pd.DataFrame,
+    cate_col: str = "cate_id",
+    user_col: str = "user_id",
+    action_col: str = "action_type",
+    freq_threshold: int = 100000,
+) -> pd.DataFrame:
+    """统计高频类别的用户行为分布
+
+    Args:
+        df_explode: 展开后的数据框
+        cate_col: 类别列名（如cate_id, brand_id等）
+        user_col: 用户ID列名
+        action_col: 行为类型列名
+        freq_threshold: 高频类别的阈值
+
+    Returns:
+        DataFrame: 用户在各个类别上的行为分布特征
+    """
+    # 1. 统计高频类别（使用value_counts的高效实现）
+    cate_counts = df_explode[cate_col].value_counts()
+    high_freq_cates = cate_counts[cate_counts >= freq_threshold].index
+    print(f"高频{cate_col}数量: {len(high_freq_cates)}")
+
+    # 2. 过滤数据（使用isin的向量化操作）
+    df_high_cate = df_explode[df_explode[cate_col].isin(high_freq_cates)][[user_col, cate_col, action_col]]
+
+    # 3. 一次性计算所有计数（避免多次groupby）
+    counts = df_high_cate.groupby([user_col, cate_col, action_col]).size().reset_index(name="count")
+
+    # 4. 计算分组总和（使用transform的向量化操作）
+    totals = counts.groupby([user_col, cate_col])["count"].transform("sum")
+
+    # 5. 计算比例（向量化操作）
+    counts["ratio"] = counts["count"] / totals
+
+    # 6. 构建特征名称（向量化操作）
+    counts["col_name"] = (
+        "action_" + counts[action_col].astype(str) + "_" + cate_col + "_" + counts[cate_col].astype(str)
+    )
+
+    # 7. 转换为宽表格式（一次性操作）
+    result = counts.pivot_table(index=user_col, columns="col_name", values="ratio", fill_value=0).reset_index()
+
+    print(f"✅ 高频{cate_col}用户行为分布特征构建完成，输出形状: {result.shape}")
     return result
 
 
@@ -256,11 +299,11 @@ def build_user_features(
 
     # 展开日志
     # df_explode = df.copy()
-    df_explode["log_list"] = df_explode["activity_log"].str.split("#")
-    df_explode = df_explode.explode("log_list")
-    df_explode[["item_id", "cate_id", "brand_id", "time_str", "action_type"]] = df_explode["log_list"].str.split(
-        ":", expand=True
-    )
+    # df_explode["log_list"] = df_explode["activity_log"].str.split("#")
+    # df_explode = df_explode.explode("log_list")
+    # df_explode[["item_id", "cate_id", "brand_id", "time_str", "action_type"]] = df_explode["log_list"].str.split(
+    #     ":", expand=True
+    # )
 
     # 用户行为类型分布
     user_action_stats = build_user_stat_features(df_explode)
@@ -541,7 +584,7 @@ def build_merchant_features(
 # ...existing code...
 
 
-def build_sequence_features(
+def build_sequence_features_v1(
     df_explode: pd.DataFrame,
     user_features: pd.DataFrame = None,
     merchant_features: pd.DataFrame = None,
@@ -683,6 +726,145 @@ def build_sequence_features(
     for k, v in sequence_features.items():
         print(f"  - {k}: {np.array(v).shape}")
         print(f"    示例: {v[0]}")
+    return sequence_features, {}
+
+
+def build_sequence_features(
+    df_explode: pd.DataFrame,
+    user_features: pd.DataFrame = None,
+    merchant_features: pd.DataFrame = None,
+    user_feature_dims: dict = {},
+    merchant_feature_dims: dict = {},
+    global_le_encoder: LabelEncoder = None,
+    seq_len: int = 10,
+    cache_dir: str = "./data/cache",
+    action_type_list: list[str] = None,
+    scale_action_counts: bool = True,
+    target_pairs: pd.DataFrame = None,  # 新增参数：目标user-merchant对
+) -> tuple[dict, dict]:
+    """构建序列特征
+
+    Args:
+        ...
+        target_pairs: DataFrame，包含需要计算特征的user_id和merchant_id对
+                     格式：columns=['user_id', 'merchant_id']
+    """
+    if action_type_list is None:
+        action_type_list = ["0", "1", "2", "3"]
+
+    cache_path = os.path.join(cache_dir, f"sequence_features_len_{seq_len}.pkl")
+    os.makedirs(cache_dir, exist_ok=True)
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    # 1. 过滤出目标user-merchant对的数据
+    if target_pairs is not None:
+        print(f"原始数据行数: {len(df_explode)}")
+        df_explode = df_explode.merge(target_pairs, on=["user_id", "merchant_id"], how="inner")
+        print(f"过滤后数据行数: {len(df_explode)}")
+        print(f"目标pairs数量: {len(target_pairs)}")
+
+    # 2. 编码类别特征（统一全局LabelEncoder）
+    for col in ["item_id", "cate_id", "brand_id", "merchant_id", "action_type"]:
+        df_explode[f"{col}_enc"] = global_le_encoder.transform(
+            df_explode[col].apply(lambda x: f"{col}:{x}" if pd.notna(x) else f"{col}:UNK")
+        )
+
+    sequence_features = {
+        "seqs": [],
+        "time_gaps": [],
+        "labels": [],
+        "user_num_feats": [],
+        "user_cat_feats": [],
+        "merchant_feats": [],
+        "user_ids": [],
+        "merchant_ids": [],
+        "pair_action_cnt": [],
+        "pair_action_type_cnt": [],
+    }
+
+    # 3. 按用户-商户对分组计算特征
+    raw_total_action_cnt = []
+    raw_action_type_cnt = []
+
+    # 优化groupby性能
+    df_explode = df_explode.sort_values(["user_id", "merchant_id"])
+    grouped = df_explode.groupby(["user_id", "merchant_id"])
+
+    for (user_id, merchant_id), group in tqdm(grouped, desc="构建序列特征"):
+        # 序列特征矩阵
+        seq = group[["item_id_enc", "cate_id_enc", "brand_id_enc", "merchant_id_enc", "action_type_enc"]].values
+
+        # 时间间隔计算优化
+        time_strs = pd.to_datetime("2024" + group["time_str"].fillna("0101"), format="%Y%m%d")
+        if len(time_strs) > 1:
+            gap = np.diff(time_strs.astype(np.int64)) / (24 * 3600 * 1e9)
+        else:
+            gap = np.zeros(1, dtype=np.float64)
+        gap = np.pad(gap, (0, max(0, seq_len - len(gap))), "constant")
+
+        # 序列裁剪/补齐
+        if len(seq) < seq_len:
+            seq = np.pad(seq, ((0, seq_len - len(seq)), (0, 0)), "constant")
+        else:
+            seq = seq[-seq_len:]
+            gap = gap[-seq_len:]
+
+        # 用户/商户特征
+        user_row = user_features[user_features["user_id"] == user_id]
+        merchant_row = merchant_features[merchant_features["merchant_id"] == merchant_id]
+        if user_row.empty or merchant_row.empty:
+            continue
+
+        # 提取特征
+        user_num_feat = user_row[user_feature_dims["num_stats_cols"]].iloc[0].values
+        user_cat_feat = user_row[user_feature_dims["cat_cols"]].iloc[0].values
+
+        merchant_num_cols = (
+            merchant_feature_dims["num_stats_cols"]
+            + merchant_feature_dims.get("action_cols", [])
+            + merchant_feature_dims.get("demo_stats_cols", [])
+        )
+        merchant_feat = merchant_row[merchant_num_cols].iloc[0].values
+
+        # 行为计数
+        total_cnt = len(group)
+        cnt_per_type = group["action_type"].value_counts().reindex(action_type_list, fill_value=0).values
+
+        # 添加特征
+        sequence_features["seqs"].append(seq)
+        sequence_features["time_gaps"].append(gap)
+        sequence_features["labels"].append(group["label"].iloc[0])
+        sequence_features["user_num_feats"].append(user_num_feat)
+        sequence_features["user_cat_feats"].append(user_cat_feat)
+        sequence_features["merchant_feats"].append(merchant_feat)
+        sequence_features["user_ids"].append(user_id)
+        sequence_features["merchant_ids"].append(merchant_id)
+
+        raw_total_action_cnt.append(total_cnt)
+        raw_action_type_cnt.append(cnt_per_type)
+
+    # 4. 统一归一化行为计数
+    raw_total_action_cnt = np.array(raw_total_action_cnt).reshape(-1, 1)
+    raw_action_type_cnt = np.array(raw_action_type_cnt)
+
+    if scale_action_counts:
+        scaler_total = MinMaxScaler()
+        scaler_types = MinMaxScaler()
+        sequence_features["pair_action_cnt"] = scaler_total.fit_transform(raw_total_action_cnt).flatten().tolist()
+        sequence_features["pair_action_type_cnt"] = scaler_types.fit_transform(raw_action_type_cnt).tolist()
+    else:
+        sequence_features["pair_action_cnt"] = raw_total_action_cnt.flatten().tolist()
+        sequence_features["pair_action_type_cnt"] = raw_action_type_cnt.tolist()
+
+    print("✅ 序列特征构建完成:")
+    print(f"  - 样本数: {len(sequence_features['seqs'])}")
+    print(f"  - 序列长度: {seq_len}")
+
+    with open(cache_path, "wb") as f:
+        pickle.dump((sequence_features, {}), f)
+
     return sequence_features, {}
 
 

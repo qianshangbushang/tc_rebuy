@@ -17,15 +17,15 @@ from feature_engineering import (
 from rebuy_model import RebuyModel, evaluate, predict, train
 
 
-def create_explode_dataframe(df: pd.DataFrame):
+def create_explode_dataframe(df_explode: pd.DataFrame):
     """加载并展开数据集"""
-    df_explode = df.copy()
+    # df_explode = df.copy()
     df_explode["log_list"] = df_explode["activity_log"].str.split("#")
     df_explode = df_explode.explode("log_list")
     df_explode[["item_id", "cate_id", "brand_id", "time_str", "action_type"]] = df_explode["log_list"].str.split(
         ":", expand=True
     )
-    return df_explode
+    return df_explode.drop(columns=["log_list"])
 
 
 def load_exploded_dataframe(nrow=None, special_sample_frac=0.1):
@@ -92,11 +92,12 @@ def run(mode="dev"):
     train_df = pd.read_csv("./data/format2/data_format2/train_format2.csv", nrows=nrows)
     test_df = pd.read_csv("./data/format2/data_format2/test_format2.csv", nrows=nrows)
     df = pd.concat([train_df, test_df])
+    print("原始数据样本数:", len(df))
     df_explode = create_explode_dataframe(df)
     del df, train_df, test_df  # 释放内存
     gc.collect()
-    df_explode = load_exploded_dataframe(nrow=nrows)
-    print("读取数据样本数:", len(df_explode))
+    # df_explode = load_exploded_dataframe(nrow=nrows)
+    # print("读取数据样本数:", len(df_explode))
 
     label_encoder = create_global_labelencoder(
         df_explode,
@@ -121,6 +122,10 @@ def run(mode="dev"):
         cache_dir=config["cache_dir"],
         global_le_encoder=label_encoder,
     )
+    target_conds = df_explode["label"] != -1
+    target_pairs = df_explode[target_conds][["user_id", "merchant_id"]].drop_duplicates().reset_index(drop=True)
+
+    print("target pairs shape:", target_pairs.shape)
 
     # 序列特征
     sequence_features, encoders = build_sequence_features(
@@ -133,6 +138,7 @@ def run(mode="dev"):
         seq_len=config["seq_len"],
         cache_dir=config["cache_dir"],
         global_le_encoder=label_encoder,
+        target_pairs=target_pairs,
     )
 
     del df_explode
